@@ -1237,6 +1237,61 @@ let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
 
 (* -------------------------------------------------------------------------- *)
 
+(* [earliest_decisive] *)
+
+let notify_earliest_decisive decisive1 fut edge2 result1 =
+  (* The second child, [fut2], is unfulfilled. *)
+  let fut2 = edge2.child in
+  assert (not (is_fulfilled fut2));
+  if decisive1 result1 then begin
+    (* [fut1] has returned a decisive result. We do not need to wait for
+       [fut2]. Transmit the result to [fut] and deactivate the edge that
+       leads from [fut] to [fut2]. *)
+    info "Future %d is fulfilled and stops watching future %d."
+      fut.id edge2.child.id;
+    fulfill fut result1;
+    deactivate_edge edge2
+  end
+  else
+    (* [fut1] has returned a non-decisive result. We need to wait for
+       [fut2]. The binary future [fut] degenerates into a proxy future,
+       watching just [fut2]. *)
+    init_proxy_future fut edge2
+
+(* A race between two distinct, unfulfilled futures. *)
+
+let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
+  assert (not (is_fulfilled fut1));
+  assert (not (is_fulfilled fut2));
+  assert (fut1 != fut2);
+  let fut = new_future "earliest_decisive" in
+  let edge1 = new_edge fut1
+  and edge2 = new_edge fut2 in
+  edge1.notify <- notify_earliest_decisive decisive1 fut edge2;
+  edge2.notify <- notify_earliest_decisive decisive2 fut edge1;
+  init_binary_future fut edge1 edge2;
+  fut
+
+(* A race between two tasks. *)
+
+let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
+  raw_earliest_decisive decisive1 decisive2 (spawn task1) (spawn task2)
+  |> wait
+
+(* A race between two arbitrary futures. *)
+
+let future_earliest_decisive decisive1 decisive2 fut1 fut2 =
+  match query fut1, query fut2 with
+  | Result result1, _ ->
+      if decisive1 result1 then fut1 else fut2
+  | _, Result result2 ->
+      if decisive2 result2 then fut2 else fut1
+  | Future fut1, Future fut2 ->
+      if fut1 == fut2 then fut1 else
+      raw_earliest_decisive decisive1 decisive2 fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
 (* Conjunction and disjunction. *)
 
 (* To share code between conjunction and disjunction, we set [conclusive]
@@ -1378,6 +1433,7 @@ let[@inline] future_biased_disjunction fut1 fut2 =
 
 module Future = struct
   let earliest = future_earliest
+  let earliest_decisive = future_earliest_decisive
   let conjunction = future_conjunction
   let disjunction = future_disjunction
   let biased_conjunction = future_biased_conjunction
