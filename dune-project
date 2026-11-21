@@ -12,7 +12,7 @@
   (source (uri git+https://github.com/fpottier/fourmi.git))
   (homepage https://github.com/fpottier/fourmi/)
   (bug_reports https://github.com/fpottier/fourmi/-/issues)
-  (synopsis "Cooperative concurrent computation with futures")
+  (synopsis "A cooperative speculative computation library")
   (license "LGPL-2.0-only WITH OCaml-LGPL-linking-exception")
   (depends
     (ocaml (>= 5.5))
