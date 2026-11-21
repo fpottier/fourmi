@@ -19,7 +19,9 @@ val wait : 'a future -> 'a
 
 val yield: unit -> unit
 
-val par  : 'a task -> 'b task -> 'a * 'b
+(* There is no [par] combinator because it would not be useful.
+   In our setting, running two tasks in parallel, until they
+   complete, is equivalent to running them in sequence. *)
 
 val earliest: 'a task -> 'a task -> 'a
 

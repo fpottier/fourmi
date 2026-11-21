@@ -5,16 +5,6 @@ let rec factorial (n : int) : int =
   if n = 0 then 1 else n * factorial (n-1)
 ;;
 
-let (foo : int) =
-  run @@ fun () ->
-    let x, y =
-      par
-        (fun () -> yield(); 3)
-        (fun () -> yield(); 4)
-    in
-    x + y
-;;
-
 let (bar : int) =
   run @@ fun () ->
     let _unused = spawn @@ fun () -> 3 in
@@ -31,18 +21,6 @@ let rec fact (n : int) : int =
 let fact5 : int =
   run @@ fun () ->
     fact 5
-;;
-
-let rec fib (n : int) : int =
-  yield();
-  if n <= 1 then 1
-  else
-    let x, y = par (fun () -> fib (n-1)) (fun () -> fib (n-2)) in
-    x + y
-;;
-
-let () =
-  assert (run @@ fun () -> fib 5 = 8)
 ;;
 
 let rec ffib (n : int) : int future =

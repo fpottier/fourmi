@@ -1191,27 +1191,6 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
 
 (* -------------------------------------------------------------------------- *)
 
-(* The parallel pair combinator. *)
-
-(* In [par], we are able to spawn just one thread, which runs [task1],
-   while the caller's thread runs [task2]. This is possible because we
-   know ahead of time that we want to wait until [task2] finishes. (We
-   want to wait until both tasks finish.)
-
-   In the case of the other binary combinators, including [select],
-   [first], [conjunction], in contrast, we hope to possibly produce a
-   result before [task1] or [task2] has finished, so we cannot commit
-   to running either task until completion. Therefore two calls to
-   [spawn] are necessary. *)
-
-let[@inline] par task1 task2 =
-  (* One future suffices. We run [task2()] on the current thread. *)
-  let fut1 = spawn task1 in
-  let result2 = task2() in
-  wait fut1, result2
-
-(* -------------------------------------------------------------------------- *)
-
 (* Select. *)
 
 (* [notify_select_left fut edge2 result1] is invoked when [fut1] has
