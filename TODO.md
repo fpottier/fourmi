@@ -2,8 +2,6 @@
 
 ## Code
 
-* Implement biased conjunction and disjunction.
-
 * Could we get rid of the `State` effect?
 
 * Should `query` perform path compression?
@@ -18,8 +16,13 @@
   That would be more efficient than a sequence of calls to `wait`
   or nested calls to `select`.
 
+* `Unary` futures are currently unused.
+
 * Support cancellation. Allow a user task to throw an exception,
-  record it in the future, throw it again when someone waits on the future.
+  record it in the future, throw it again when someone waits on
+  the future.
+  + Only for one dedicated exception, `Cancel`?
+  + Or for every exception?
 
 * Is it a problem that we use fixed (toplevel) effect names?
   Does this cause problems with nested uses of `run`?
@@ -61,6 +64,7 @@
 * In the type `thread`, the field `awaits` has type `untyped_edge option`.
   One could remove the option by using a pointer to a sentinel value.
 
-* Sharing the code between `conjunction` and `disjunction` costs of one word
-  of memory in each edge of the binary future. One could avoid this by
-  duplicating and specializing the code.
+* Defining `conjunction` and `disjunction` in terms of `earliest_decisive`
+  costs two words of memory in each edge of the binary future, because the
+  functions `decisive1` and `decisive2` are stored in memory. One could avoid
+  this by duplicating and specializing the code.
