@@ -68,7 +68,7 @@ let () =
     (* This should start computing [fact 5 = 17] and [big] in parallel,
        then stop without finishing [big], because the result is [false]. *)
     let foo : bool =
-      conjunction
+      Future.conjunction
         (spawn @@ fun () -> fact 5 = 17)
         big
       |> wait
@@ -80,13 +80,6 @@ let () =
     assert b
 ;;
 
-(*
-let fib25 : int =
-  run @@ fun () ->
-    wait (mfib 25)
-;;
-*)
-
 let () =
   run @@ fun () ->
     let n1 = 5
@@ -94,7 +87,7 @@ let () =
     let fact1 : int future = spawn @@ fun () -> fact n1
     and fact2 : int future = spawn @@ fun () -> fact n2 in
     let foo : (int, int) Either.t =
-      select fact1 fact2
+      Future.select fact1 fact2
       |> wait
     in
     assert (foo = Either.Left (factorial n1));
@@ -110,7 +103,7 @@ let () =
     let fact1 : int future = spawn @@ fun () -> fact n1
     and fact2 : int future = spawn @@ fun () -> fact n2 in
     let foo : int =
-      first fact2 fact1
+      Future.earliest fact2 fact1
       |> wait
     in
     assert (foo = factorial n1);
