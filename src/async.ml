@@ -1191,61 +1191,11 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
 
 (* -------------------------------------------------------------------------- *)
 
-(* Select. *)
+(* [earliest]. *)
 
-(* [notify_select_left fut edge2 result1] is invoked when [fut1] has
-   returned [result1]. We do not need to wait for [fut2]. We transmit
-   the result [Left result1] to [fut] and deactivate the edge that
-   leads from [fut] to [fut2]. *)
-
-let notify_select_left fut edge2 result1 =
-  info "Future %d is fulfilled and stops watching future %d."
-    fut.id edge2.child.id;
-  fulfill fut (Either.Left result1);
-  deactivate_edge edge2
-
-let notify_select_right fut edge1 result2 =
-  info "Future %d is fulfilled and stops watching future %d."
-    fut.id edge1.child.id;
-  fulfill fut (Either.Right result2);
-  deactivate_edge edge1
-
-(* Selection between two unfulfilled futures. *)
-
-(* [fut1] and [fut2] are not necessarily distinct. *)
-
-let raw_select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t future =
-  assert (not (is_fulfilled fut1));
-  assert (not (is_fulfilled fut2));
-  (* Create a fresh binary future, watching [fut1] and [fut2]. *)
-  let fut = new_future "select" in
-  let edge1 = new_edge fut1
-  and edge2 = new_edge fut2 in
-  edge1.notify <- notify_select_left fut edge2;
-  edge2.notify <- notify_select_right fut edge1;
-  init_binary_future fut edge1 edge2;
-  fut
-
-(* Selection between two tasks. *)
-
-let[@inline] select (task1 : 'a task) (task2 : 'b task) : ('a, 'b) Either.t =
-  raw_select (spawn task1) (spawn task2)
-  |> wait
-
-(* Selection between two arbitrary futures. *)
-
-let future_select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t future =
-  match query fut1, query fut2 with
-  | Result result, _ ->
-      return (Either.Left result)
-  | _, Result result ->
-      return (Either.right result)
-  | Future fut1, Future fut2 ->
-      raw_select fut1 fut2
-
-(* -------------------------------------------------------------------------- *)
-
-(* Racing: [earliest]. *)
+(* [notify_earliest fut edge2 result1] is invoked when [fut1] has returned
+   [result1]. We do not need to wait for [fut2]. We transmit [result1] to
+   [fut] and deactivate the edge that leads from [fut] to [fut2]. *)
 
 let notify_earliest fut edge2 result1 =
   info "Future %d is fulfilled and stops watching future %d."
@@ -1379,6 +1329,5 @@ let[@inline] future_disjunction fut1 fut2 =
 module Future = struct
   let conjunction = future_conjunction
   let disjunction = future_disjunction
-  let select = future_select
   let earliest = future_earliest
 end

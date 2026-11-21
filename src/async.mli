@@ -24,9 +24,9 @@ val yield: unit -> unit
    complete, is equivalent to running them in sequence. *)
 
 val earliest: 'a task -> 'a task -> 'a
-
-val select: 'a task -> 'b task -> ('a, 'b) Either.t
-  (* [select] is a variant of [earliest]; perhaps it should be renamed *)
+  (* To apply [earliest] to two tasks of types ['a task] and ['b task],
+     just wrap the results of these tasks in a common type, such as
+     [('a, 'b) Either.t]. *)
 
 val conjunction: bool task -> bool task -> bool
 val disjunction: bool task -> bool task -> bool
@@ -47,7 +47,6 @@ val join : 'a future future -> 'a future
 
 module Future : sig
   val earliest: 'a future -> 'a future -> 'a future
-  val select: 'a future -> 'b future -> ('a, 'b) Either.t future
   val conjunction: bool future -> bool future -> bool future
   val disjunction: bool future -> bool future -> bool future
 end
