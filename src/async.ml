@@ -1266,12 +1266,9 @@ let future_select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t futu
 
 (* -------------------------------------------------------------------------- *)
 
-(* Racing. *)
+(* Racing: [earliest]. *)
 
-(* [first] is a variant of [select] where the two futures have the same
-   type and no sum is constructed. *)
-
-let notify_first fut edge2 result1 =
+let notify_earliest fut edge2 result1 =
   info "Future %d is fulfilled and stops watching future %d."
     fut.id edge2.child.id;
   fulfill fut result1;
@@ -1279,27 +1276,27 @@ let notify_first fut edge2 result1 =
 
 (* A race between two distinct, unfulfilled futures. *)
 
-let raw_first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
+let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   assert (not (is_fulfilled fut1));
   assert (not (is_fulfilled fut2));
   assert (fut1 != fut2);
-  let fut = new_future "first" in
+  let fut = new_future "earliest" in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
-  edge1.notify <- notify_first fut edge2;
-  edge2.notify <- notify_first fut edge1;
+  edge1.notify <- notify_earliest fut edge2;
+  edge2.notify <- notify_earliest fut edge1;
   init_binary_future fut edge1 edge2;
   fut
 
 (* A race between two tasks. *)
 
-let[@inline] first (task1 : 'a task) (task2 : 'a task) : 'a =
-  raw_first (spawn task1) (spawn task2)
+let[@inline] earliest (task1 : 'a task) (task2 : 'a task) : 'a =
+  raw_earliest (spawn task1) (spawn task2)
   |> wait
 
 (* A race between two arbitrary futures. *)
 
-let future_first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
+let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   match query fut1, query fut2 with
   | Result _, _ ->
       fut1
@@ -1307,7 +1304,7 @@ let future_first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
       fut2
   | Future fut1, Future fut2 ->
       if fut1 == fut2 then fut1 else
-      raw_first fut1 fut2
+      raw_earliest fut1 fut2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1385,5 +1382,5 @@ let future_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
 module Future = struct
   let conjunction = future_conjunction
   let select = future_select
-  let first = future_first
+  let earliest = future_earliest
 end
