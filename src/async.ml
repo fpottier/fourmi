@@ -1295,8 +1295,38 @@ let notify_conjunction fut edge2 result1 =
     deactivate_edge edge2
   end
 
-let conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
-  (* A bunch of fast paths and easy cases. *)
+(* The conjunction of two distinct, unfulfilled futures. *)
+
+let raw_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
+  assert (not (is_fulfilled fut1));
+  assert (not (is_fulfilled fut2));
+  assert (fut1 != fut2);
+  (* Create a fresh conjunction future, watching [fut1] and [fut2]. *)
+  let fut = new_future "conjunction" in
+  let edge1 = new_edge fut1
+  and edge2 = new_edge fut2 in
+  edge1.notify <- notify_conjunction fut edge2;
+  edge2.notify <- notify_conjunction fut edge1;
+  init_binary_future fut edge1 edge2;
+  fut
+
+(* The conjunction of two tasks. *)
+
+(* In [par], we are able to spawn just one thread, which runs [task1],
+   while the caller's thread runs [task2]. This is possible because we
+   know, ahead of time, that we want to wait until [task2] finishes.
+   Here, in contrast, we hope to return as soon as [task1] or [task2]
+   finishes, so we cannot commit to running either one of these tasks
+   to its completion. Therefore two calls to [spawn] are necessary. *)
+
+let[@inline] conjunction (task1 : bool task) (task2 : bool task) : bool =
+  raw_conjunction (spawn task1) (spawn task2)
+  |> wait
+
+(* The conjunction of two arbitrary futures. *)
+
+let future_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
+  (* Fast paths. *)
   if fut1 == fut2 then fut1 else
   match query fut1, query fut2 with
   | Result false, _ ->
@@ -1312,13 +1342,11 @@ let conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
       (* b ∧ true = b *)
       fut1
   | Future fut1, Future fut2 ->
-      (* The children of a conjunction future must be distinct. *)
       if fut1 == fut2 then fut1 else
-      (* Create a fresh conjunction future, watching [fut1] and [fut2]. *)
-      let fut = new_future "conjunction" in
-      let edge1 = new_edge fut1
-      and edge2 = new_edge fut2 in
-      edge1.notify <- notify_conjunction fut edge2;
-      edge2.notify <- notify_conjunction fut edge1;
-      init_binary_future fut edge1 edge2;
-      fut
+      raw_conjunction fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
+module Future = struct
+  let conjunction = future_conjunction
+end

@@ -24,12 +24,8 @@ val par  : 'a task -> 'b task -> 'a * 'b
 val select: 'a future -> 'b future -> ('a, 'b) Either.t future
 val first: 'a future -> 'a future -> 'a future
 
-val conjunction: bool future -> bool future -> bool future
+val conjunction: bool task -> bool task -> bool
 
-(* TODO
-val disjunction: bool future -> bool future -> bool future
-also biased disjunction; a special case of select?
- *)
 val run : 'a task -> 'a
 
 (**[return x] is equivalent to [spawn (fun () -> x)],
@@ -43,3 +39,7 @@ val bind : 'a future -> ('a -> 'b future) -> 'b future
 val map : ('a -> 'b) -> 'a future -> 'b future
 
 val join : 'a future future -> 'a future
+
+module Future : sig
+  val conjunction: bool future -> bool future -> bool future
+end
