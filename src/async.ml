@@ -1296,8 +1296,8 @@ let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
    return [not conclusive] then the final result is [not conclusive]. *)
 
 (* Because [conclusive] is captured in a closure, sharing the code in this
-   way costs one word in memory. One could get rid of this code by
-   duplicating and specializing the code. *)
+   way costs one word in memory. One could avoid this cost by duplicating
+   and specializing the code. *)
 
 (* [notify_xxxjunction fut edge2 result1] notifies the xxxjunction future
    [fut], whose second child is [edge2], that its first child has obtained
