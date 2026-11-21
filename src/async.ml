@@ -797,6 +797,7 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
 (* [fut] must not be fulfilled already. *)
 
 let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
+  assert (not (is_fulfilled fut));
   let parents = get_parents fut in
   fut.status <- Done { result };
   notify_parents parents result
@@ -806,6 +807,8 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
    with the same outgoing edge. *)
 
 let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
+  assert (not (is_fulfilled fut));
+  assert (not (is_fulfilled edge.child));
   info "Future %d becomes a proxy future." fut.id;
   let parents = get_parents fut in
   edge.notify <- fulfill fut;
@@ -821,6 +824,7 @@ let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
    is activated immediately. *)
 
 let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
+  assert (not (is_fulfilled fut1));
   assert (is_active fut1);
   match query fut2 with
   | Result result ->
