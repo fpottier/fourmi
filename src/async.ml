@@ -1036,7 +1036,7 @@ let run (type w) (main : w task) : w =
       or should it wait for some other future?
 
    These two two-way choices give rise to four variants, namely
-   [spawn], [spawn_join], [map], and [bind]. *)
+   [spawn], [spawn_wait], [map], and [bind]. *)
 
 (* [spawn task] creates a new future [fut] and a new thread. This thread
    runs the task [task] and fulfills [fut] with its result. The new thread
@@ -1050,12 +1050,12 @@ let[@inline] spawn (task : 'a task) : 'a future =
   let child () = fulfill fut (task()) in
   unit_resumption s (fiber child)
 
-(* [spawn_join task] creates a new thread in charge of running [task] and
+(* [spawn_wait task] creates a new thread in charge of running [task] and
    waiting on its result, which is expected to be a future. Once [task] has
    terminated, the future [fut] is transformed into a proxy for the future
    returned by [task]. *)
 
-let[@inline] spawn_join (task : 'a future task) : 'a future =
+let[@inline] spawn_wait (task : 'a future task) : 'a future =
   let s = get_state() in
   new_ordinary_future s @@ fun fut ->
   (* Run [task] and change [fut] into a proxy for its result. *)
@@ -1089,14 +1089,14 @@ let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
       then, once [fut1] produces a result [result],
    2- run [task result] and wait on its result. *)
 
-(* If [fut1] is fulfilled already then a simple use of [spawn_join]
+(* If [fut1] is fulfilled already then a simple use of [spawn_wait]
    suffices. Otherwise the new thread is created in a blocked state,
    waiting for [fut1]. *)
 
 let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
   match query fut1 with
   | Result result ->
-      spawn_join (fun () -> task result)
+      spawn_wait (fun () -> task result)
   | Future fut1 ->
       let s = get_state() in
       let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
@@ -1229,7 +1229,7 @@ let[@inline] earliest (task1 : 'a task) (task2 : 'a task) : 'a =
 
 (* A race between two arbitrary futures. *)
 
-let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
+let earliest_fut (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   match query fut1, query fut2 with
   | Result _, _ ->
       fut1
@@ -1277,7 +1277,7 @@ let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
 
 (* A race between two arbitrary futures. *)
 
-let future_earliest_decisive decisive1 decisive2 fut1 fut2 =
+let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
   match query fut1, query fut2 with
   | Result result1, _ ->
       if decisive1 result1 then fut1 else fut2
@@ -1297,8 +1297,8 @@ let is_false b =
 let[@inline] conjunction task1 task2 =
   earliest_decisive is_false is_false task1 task2
 
-let[@inline] future_conjunction fut1 fut2 =
-  future_earliest_decisive is_false is_false fut1 fut2
+let[@inline] conjunction_fut fut1 fut2 =
+  earliest_decisive_fut is_false is_false fut1 fut2
 
 let is_true b =
   b
@@ -1308,14 +1308,5 @@ let is_true b =
 let[@inline] disjunction task1 task2 =
   earliest_decisive is_true is_true task1 task2
 
-let[@inline] future_disjunction fut1 fut2 =
-  future_earliest_decisive is_true is_true fut1 fut2
-
-(* -------------------------------------------------------------------------- *)
-
-module Future = struct
-  let earliest = future_earliest
-  let earliest_decisive = future_earliest_decisive
-  let conjunction = future_conjunction
-  let disjunction = future_disjunction
-end
+let[@inline] disjunction_fut fut1 fut2 =
+  earliest_decisive_fut is_true is_true fut1 fut2
