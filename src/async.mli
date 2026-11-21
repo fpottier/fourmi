@@ -32,8 +32,6 @@ val earliest_decisive: ('a -> bool) -> ('a -> bool) -> 'a task -> 'a task -> 'a
 
 val conjunction: bool task -> bool task -> bool
 val disjunction: bool task -> bool task -> bool
-val biased_conjunction: bool task -> bool task -> bool
-val biased_disjunction: bool task -> bool task -> bool
 
 val run : 'a task -> 'a
 
@@ -54,6 +52,4 @@ module Future : sig
   val earliest_decisive: ('a -> bool) -> ('a -> bool) -> 'a future -> 'a future -> 'a future
   val conjunction: bool future -> bool future -> bool future
   val disjunction: bool future -> bool future -> bool future
-  val biased_conjunction: bool future -> bool future -> bool future
-  val biased_disjunction: bool future -> bool future -> bool future
 end

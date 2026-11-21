@@ -1291,140 +1291,25 @@ let future_earliest_decisive decisive1 decisive2 fut1 fut2 =
 
 (* Conjunction and disjunction. *)
 
-(* To share code between conjunction and disjunction, we set [conclusive]
-   to [false] in the case of [conjunction] and to [true] in the case of
-   disjunction. If either future returns [conclusive] then this result can
-   be transmitted without waiting for the other future. If both futures
-   return [not conclusive] then the final result is [not conclusive]. *)
-
-(* A biased conjunction is [A ∧ B], under the assumption that [A → B] holds.
-   As in a plain conjunction, if either side returns [false], we can return
-   [false] immediately. Furthermore, if [A] returns [true], then [B] must be
-   [true] as well, so can return [true] immediately. If [B] returns [true]
-   then we must wait for [A]. *)
-
-(* A biased conjunction is a hybrid between [earliest] and [conjunction].
-   Along its left edge, it behaves like [earliest]. Along its right edge,
-   it behaves like [conjunction]. *)
-
-(* To share code between biased conjunction and plain conjunction, we
-   introduce the parameter [biased]. *)
-
-(* Because [conclusive] and [biased] are captured in a closure, sharing the
-   code in this way costs two words in memory. One could avoid this cost by
-   duplicating and specializing the code. *)
-
-(* [notify_xxxjunction fut edge2 result1] notifies the xxxjunction future
-   [fut], whose second child is [edge2], that its first child has obtained
-   the result [result1]. *)
-
-(* A xxxjunction future behaves in a symmetric way: this function can also
-   be applied to [edge1] and [result2]. *)
-
-let notify_xxxjunction conclusive fut edge2 result1 =
-  (* The second child, [fut2], is unfulfilled. *)
-  let fut2 = edge2.child in
-  assert (not (is_fulfilled fut2));
-  if result1 <> conclusive then
-    (* [fut1] has returned a non-conclusive result. We need to wait for
-       [fut2]. The binary future [fut] degenerates into a proxy future,
-       watching just [fut2]. *)
-    init_proxy_future fut edge2
-  else begin
-    (* [fut1] has returned a conclusive result. We do not need to wait for
-       [fut2]. Transmit the conclusive result to [fut], and deactivate the
-       edge that leads from [fut] to [fut2]. *)
-    info "Future %d is fulfilled and stops watching future %d."
-      fut.id edge2.child.id;
-    fulfill fut conclusive;
-    deactivate_edge edge2
-  end
-
-(* The possibly biased xxxjunction of two distinct, unfulfilled futures. *)
-
-let raw_xxxjunction biased conclusive fut1 fut2 : bool future =
-  assert (not (is_fulfilled fut1));
-  assert (not (is_fulfilled fut2));
-  assert (fut1 != fut2);
-  (* Create a fresh xxxjunction future, watching [fut1] and [fut2]. *)
-  let kind = if conclusive then "disjunction" else "conjunction" in
-  let fut = new_future kind in
-  let edge1 = new_edge fut1
-  and edge2 = new_edge fut2 in
-  if biased then
-    edge1.notify <- notify_earliest fut edge2
-  else
-    edge1.notify <- notify_xxxjunction conclusive fut edge2
-  ;
-  edge2.notify <- notify_xxxjunction conclusive fut edge1;
-  init_binary_future fut edge1 edge2;
-  fut
-
-(* The possibly biased xxxjunction of two tasks. *)
-
-let[@inline] xxxjunction biased conclusive task1 task2 : bool =
-  raw_xxxjunction biased conclusive (spawn task1) (spawn task2)
-  |> wait
-
-(* The possibly biased xxxjunction of two arbitrary futures. *)
-
-let future_xxxjunction biased conclusive fut1 fut2 : bool future =
-  match query fut1, query fut2 with
-  | Result result1, _ ->
-      if biased || result1 = conclusive then fut1 else fut2
-  | _, Result result2 ->
-      if result2 = conclusive then fut2 else fut1
-  | Future fut1, Future fut2 ->
-      if fut1 == fut2 then fut1 else
-      raw_xxxjunction biased conclusive fut1 fut2
-
-(* Conjunction. *)
+let is_false b =
+  not b
 
 let[@inline] conjunction task1 task2 =
-  let biased = false
-  and conclusive = false in
-  xxxjunction biased conclusive task1 task2
+  earliest_decisive is_false is_false task1 task2
 
 let[@inline] future_conjunction fut1 fut2 =
-  let biased = false
-  and conclusive = false in
-  future_xxxjunction biased conclusive fut1 fut2
+  future_earliest_decisive is_false is_false fut1 fut2
 
-(* Biased conjunction. *)
-
-let[@inline] biased_conjunction task1 task2 =
-  let biased = true
-  and conclusive = false in
-  xxxjunction biased conclusive task1 task2
-
-let[@inline] future_biased_conjunction fut1 fut2 =
-  let biased = true
-  and conclusive = false in
-  future_xxxjunction biased conclusive fut1 fut2
+let is_true b =
+  b
 
 (* Disjunction. *)
 
 let[@inline] disjunction task1 task2 =
-  let biased = false
-  and conclusive = true in
-  xxxjunction biased conclusive task1 task2
+  earliest_decisive is_true is_true task1 task2
 
 let[@inline] future_disjunction fut1 fut2 =
-  let biased = false
-  and conclusive = true in
-  future_xxxjunction biased conclusive fut1 fut2
-
-(* Biased disjunction. *)
-
-let[@inline] biased_disjunction task1 task2 =
-  let biased = true
-  and conclusive = true in
-  xxxjunction biased conclusive task1 task2
-
-let[@inline] future_biased_disjunction fut1 fut2 =
-  let biased = true
-  and conclusive = true in
-  future_xxxjunction biased conclusive fut1 fut2
+  future_earliest_decisive is_true is_true fut1 fut2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1433,6 +1318,4 @@ module Future = struct
   let earliest_decisive = future_earliest_decisive
   let conjunction = future_conjunction
   let disjunction = future_disjunction
-  let biased_conjunction = future_biased_conjunction
-  let biased_disjunction = future_biased_disjunction
 end
