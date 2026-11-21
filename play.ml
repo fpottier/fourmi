@@ -86,12 +86,12 @@ let () =
     and n2 = 12 in
     let fact1 : int future = spawn @@ fun () -> fact n1
     and fact2 : int future = spawn @@ fun () -> fact n2 in
-    let foo : (int, int) Either.t =
-      Future.select fact1 fact2
+    let foo =
+      Future.earliest fact1 fact2
       |> wait
     in
-    assert (foo = Either.Left (factorial n1));
-    Printf.printf "*********** The selection has returned %d.\n%!" (factorial n1);
+    assert (foo = factorial n1);
+    Printf.printf "*********** The earliest result is %d.\n%!" (factorial n1);
     (* This should resume the computation of [fact2]. *)
     Printf.printf "*********** fact(%d) is %d\n%!" n2 (wait fact2)
 ;;
