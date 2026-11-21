@@ -26,8 +26,10 @@ val yield: unit -> unit
 val earliest: 'a task -> 'a task -> 'a
 
 val select: 'a task -> 'b task -> ('a, 'b) Either.t
+  (* [select] is a variant of [earliest]; perhaps it should be renamed *)
 
 val conjunction: bool task -> bool task -> bool
+val disjunction: bool task -> bool task -> bool
 
 val run : 'a task -> 'a
 
@@ -47,4 +49,5 @@ module Future : sig
   val earliest: 'a future -> 'a future -> 'a future
   val select: 'a future -> 'b future -> ('a, 'b) Either.t future
   val conjunction: bool future -> bool future -> bool future
+  val disjunction: bool future -> bool future -> bool future
 end

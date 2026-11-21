@@ -1287,79 +1287,98 @@ let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
 
 (* -------------------------------------------------------------------------- *)
 
-(* Conjunction futures. *)
+(* Conjunction and disjunction. *)
 
-(* [notify_conjunction fut edge2 result1] notifies the conjunction future
+(* To share code between conjunction and disjunction, we set [conclusive]
+   to [false] in the case of [conjunction] and to [true] in the case of
+   disjunction. If either future returns [conclusive] then this result can
+   be transmitted without waiting for the other future. If both futures
+   return [not conclusive] then the final result is [not conclusive]. *)
+
+(* Because [conclusive] is captured in a closure, sharing the code in this
+   way costs one word in memory. One could get rid of this code by
+   duplicating and specializing the code. *)
+
+(* [notify_xxxjunction fut edge2 result1] notifies the xxxjunction future
    [fut], whose second child is [edge2], that its first child has obtained
    the result [result1]. *)
 
-(* A conjunction future behaves in a symmetric way, so this function can
-   also be applied to [edge1] and [result2]. *)
+(* A xxxjunction future behaves in a symmetric way: this function can also
+   be applied to [edge1] and [result2]. *)
 
-let notify_conjunction fut edge2 result1 =
+let notify_xxxjunction conclusive fut edge2 result1 =
   (* The second child, [fut2], is unfulfilled. *)
   let fut2 = edge2.child in
   assert (not (is_fulfilled fut2));
-  if result1 then
-    (* [fut1] has returned [true]. We need to wait for [fut2].
-       The conjunction future [fut] degenerates into a proxy future,
+  if result1 <> conclusive then
+    (* [fut1] has returned a non-conclusive result. We need to wait for
+       [fut2]. The binary future [fut] degenerates into a proxy future,
        watching just [fut2]. *)
     init_proxy_future fut edge2
   else begin
-    (* [fut1] has returned [false]. We do not need to wait for [fut2].
-       Transmit the result [false] to [fut], and deactivate the edge
-       that leads from [fut] to [fut2]. *)
+    (* [fut1] has returned a conclusive result. We do not need to wait for
+       [fut2]. Transmit the conclusive result to [fut], and deactivate the
+       edge that leads from [fut] to [fut2]. *)
     info "Future %d is fulfilled and stops watching future %d."
       fut.id edge2.child.id;
-    fulfill fut false;
+    fulfill fut conclusive;
     deactivate_edge edge2
   end
 
-(* The conjunction of two distinct, unfulfilled futures. *)
+(* The xxxjunction of two distinct, unfulfilled futures. *)
 
-let raw_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
+let raw_xxxjunction conclusive fut1 fut2 : bool future =
   assert (not (is_fulfilled fut1));
   assert (not (is_fulfilled fut2));
   assert (fut1 != fut2);
-  (* Create a fresh conjunction future, watching [fut1] and [fut2]. *)
-  let fut = new_future "conjunction" in
+  (* Create a fresh xxxjunction future, watching [fut1] and [fut2]. *)
+  let fut = new_future (if conclusive then "disjunction" else "conjunction") in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
-  edge1.notify <- notify_conjunction fut edge2;
-  edge2.notify <- notify_conjunction fut edge1;
+  edge1.notify <- notify_xxxjunction conclusive fut edge2;
+  edge2.notify <- notify_xxxjunction conclusive fut edge1;
   init_binary_future fut edge1 edge2;
   fut
 
-(* The conjunction of two tasks. *)
+(* The xxxjunction of two tasks. *)
 
-let[@inline] conjunction (task1 : bool task) (task2 : bool task) : bool =
-  raw_conjunction (spawn task1) (spawn task2)
+let[@inline] xxxjunction conclusive task1 task2 : bool =
+  raw_xxxjunction conclusive (spawn task1) (spawn task2)
   |> wait
 
-(* The conjunction of two arbitrary futures. *)
+(* The xxxjunction of two arbitrary futures. *)
 
-let future_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
+let future_xxxjunction conclusive fut1 fut2 : bool future =
   match query fut1, query fut2 with
-  | Result false, _ ->
-      (* false ∧ _ = false *)
-      fut1
-  | _, Result false ->
-      (* _ ∧ false = false *)
-      fut2
-  | Result true, _ ->
-      (* true ∧ b = b *)
-      fut2
-  | _, Result true ->
-      (* b ∧ true = b *)
-      fut1
+  | Result result1, _ ->
+      if result1 = conclusive then fut1 else fut2
+  | _, Result result2 ->
+      if result2 = conclusive then fut2 else fut1
   | Future fut1, Future fut2 ->
       if fut1 == fut2 then fut1 else
-      raw_conjunction fut1 fut2
+      raw_xxxjunction conclusive fut1 fut2
+
+(* Conjunction. *)
+
+let[@inline] conjunction task1 task2 =
+  xxxjunction false task1 task2
+
+let[@inline] future_conjunction fut1 fut2 =
+  future_xxxjunction false fut1 fut2
+
+(* Disjunction. *)
+
+let[@inline] disjunction task1 task2 =
+  xxxjunction true task1 task2
+
+let[@inline] future_disjunction fut1 fut2 =
+  future_xxxjunction true fut1 fut2
 
 (* -------------------------------------------------------------------------- *)
 
 module Future = struct
   let conjunction = future_conjunction
+  let disjunction = future_disjunction
   let select = future_select
   let earliest = future_earliest
 end
