@@ -1193,6 +1193,17 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
 
 (* The parallel pair combinator. *)
 
+(* In [par], we are able to spawn just one thread, which runs [task1],
+   while the caller's thread runs [task2]. This is possible because we
+   know ahead of time that we want to wait until [task2] finishes. (We
+   want to wait until both tasks finish.)
+
+   In the case of the other binary combinators, including [select],
+   [first], [conjunction], in contrast, we hope to possibly produce a
+   result before [task1] or [task2] has finished, so we cannot commit
+   to running either task until completion. Therefore two calls to
+   [spawn] are necessary. *)
+
 let[@inline] par task1 task2 =
   (* One future suffices. We run [task2()] on the current thread. *)
   let fut1 = spawn task1 in
@@ -1203,53 +1214,92 @@ let[@inline] par task1 task2 =
 
 (* Select. *)
 
+(* [notify_select_left fut edge2 result1] is invoked when [fut1] has
+   returned [result1]. We do not need to wait for [fut2]. We transmit
+   the result [Left result1] to [fut] and deactivate the edge that
+   leads from [fut] to [fut2]. *)
+
 let notify_select_left fut edge2 result1 =
-  (* [fut1] has returned [result1]. We do not need to wait for [fut2].
-     Transmit the result [Left result1] to [fut], and deactivate
-     the edge that leads from [fut] to [fut2]. *)
-  (* It may be the case that [fut1] and [fut2] are the same future. *)
-  info "Select future %d is fulfilled and stops watching future %d."
+  info "Future %d is fulfilled and stops watching future %d."
     fut.id edge2.child.id;
   fulfill fut (Either.Left result1);
   deactivate_edge edge2
 
 let notify_select_right fut edge1 result2 =
-  info "Select future %d is fulfilled and stops watching future %d."
+  info "Future %d is fulfilled and stops watching future %d."
     fut.id edge1.child.id;
   fulfill fut (Either.Right result2);
   deactivate_edge edge1
 
-(* Because the two futures have distinct types, we cannot use a physical
-   equality test so as to ensure that they are distinct. Therefore, we
-   accept that [fut1] and [fut2] might be the same future. *)
+(* Selection between two unfulfilled futures. *)
 
-let select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t future =
+(* [fut1] and [fut2] are not necessarily distinct. *)
+
+let raw_select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t future =
+  assert (not (is_fulfilled fut1));
+  assert (not (is_fulfilled fut2));
+  (* Create a fresh binary future, watching [fut1] and [fut2]. *)
+  let fut = new_future "select" in
+  let edge1 = new_edge fut1
+  and edge2 = new_edge fut2 in
+  edge1.notify <- notify_select_left fut edge2;
+  edge2.notify <- notify_select_right fut edge1;
+  init_binary_future fut edge1 edge2;
+  fut
+
+(* Selection between two tasks. *)
+
+let[@inline] select (task1 : 'a task) (task2 : 'b task) : ('a, 'b) Either.t =
+  raw_select (spawn task1) (spawn task2)
+  |> wait
+
+(* Selection between two arbitrary futures. *)
+
+let future_select (fut1 : 'a future) (fut2 : 'b future) : ('a, 'b) Either.t future =
   match query fut1, query fut2 with
   | Result result, _ ->
       return (Either.Left result)
   | _, Result result ->
       return (Either.right result)
   | Future fut1, Future fut2 ->
-      (* Create a fresh binary future, watching [fut1] and [fut2]. *)
-      let fut = new_future "select" in
-      let edge1 = new_edge fut1
-      and edge2 = new_edge fut2 in
-      edge1.notify <- notify_select_left fut edge2;
-      edge2.notify <- notify_select_right fut edge1;
-      init_binary_future fut edge1 edge2;
-      fut
+      raw_select fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
+(* Racing. *)
 
 (* [first] is a variant of [select] where the two futures have the same
    type and no sum is constructed. *)
 
 let notify_first fut edge2 result1 =
-  info "Select future %d is fulfilled and stops watching future %d."
+  info "Future %d is fulfilled and stops watching future %d."
     fut.id edge2.child.id;
   fulfill fut result1;
   deactivate_edge edge2
 
-let first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
-  if fut1 == fut2 then fut1 else
+(* A race between two distinct, unfulfilled futures. *)
+
+let raw_first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
+  assert (not (is_fulfilled fut1));
+  assert (not (is_fulfilled fut2));
+  assert (fut1 != fut2);
+  let fut = new_future "first" in
+  let edge1 = new_edge fut1
+  and edge2 = new_edge fut2 in
+  edge1.notify <- notify_first fut edge2;
+  edge2.notify <- notify_first fut edge1;
+  init_binary_future fut edge1 edge2;
+  fut
+
+(* A race between two tasks. *)
+
+let[@inline] first (task1 : 'a task) (task2 : 'a task) : 'a =
+  raw_first (spawn task1) (spawn task2)
+  |> wait
+
+(* A race between two arbitrary futures. *)
+
+let future_first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   match query fut1, query fut2 with
   | Result _, _ ->
       fut1
@@ -1257,13 +1307,7 @@ let first (fut1 : 'a future) (fut2 : 'a future) : 'a future =
       fut2
   | Future fut1, Future fut2 ->
       if fut1 == fut2 then fut1 else
-      let fut = new_future "first" in
-      let edge1 = new_edge fut1
-      and edge2 = new_edge fut2 in
-      edge1.notify <- notify_first fut edge2;
-      edge2.notify <- notify_first fut edge1;
-      init_binary_future fut edge1 edge2;
-      fut
+      raw_first fut1 fut2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1312,13 +1356,6 @@ let raw_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
 
 (* The conjunction of two tasks. *)
 
-(* In [par], we are able to spawn just one thread, which runs [task1],
-   while the caller's thread runs [task2]. This is possible because we
-   know, ahead of time, that we want to wait until [task2] finishes.
-   Here, in contrast, we hope to return as soon as [task1] or [task2]
-   finishes, so we cannot commit to running either one of these tasks
-   to its completion. Therefore two calls to [spawn] are necessary. *)
-
 let[@inline] conjunction (task1 : bool task) (task2 : bool task) : bool =
   raw_conjunction (spawn task1) (spawn task2)
   |> wait
@@ -1326,8 +1363,6 @@ let[@inline] conjunction (task1 : bool task) (task2 : bool task) : bool =
 (* The conjunction of two arbitrary futures. *)
 
 let future_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
-  (* Fast paths. *)
-  if fut1 == fut2 then fut1 else
   match query fut1, query fut2 with
   | Result false, _ ->
       (* false ∧ _ = false *)
@@ -1349,4 +1384,6 @@ let future_conjunction (fut1 : bool future) (fut2 : bool future) : bool future =
 
 module Future = struct
   let conjunction = future_conjunction
+  let select = future_select
+  let first = future_first
 end

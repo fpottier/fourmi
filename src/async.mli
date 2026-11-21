@@ -21,8 +21,9 @@ val yield: unit -> unit
 
 val par  : 'a task -> 'b task -> 'a * 'b
 
-val select: 'a future -> 'b future -> ('a, 'b) Either.t future
-val first: 'a future -> 'a future -> 'a future
+val first: 'a task -> 'a task -> 'a
+
+val select: 'a task -> 'b task -> ('a, 'b) Either.t
 
 val conjunction: bool task -> bool task -> bool
 
@@ -41,5 +42,7 @@ val map : ('a -> 'b) -> 'a future -> 'b future
 val join : 'a future future -> 'a future
 
 module Future : sig
+  val first: 'a future -> 'a future -> 'a future
+  val select: 'a future -> 'b future -> ('a, 'b) Either.t future
   val conjunction: bool future -> bool future -> bool future
 end
