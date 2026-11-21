@@ -1201,7 +1201,7 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
    [result1]. We do not need to wait for [fut2]. We transmit [result1] to
    [fut] and deactivate the edge that leads from [fut] to [fut2]. *)
 
-let notify_earliest fut edge2 result1 =
+let[@inline] notify_earliest fut edge2 result1 =
   info "Future %d is fulfilled and stops watching future %d."
     fut.id edge2.child.id;
   fulfill fut result1;
@@ -1244,18 +1244,11 @@ let future_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
 (* [earliest_decisive] *)
 
 let notify_earliest_decisive decisive1 fut edge2 result1 =
-  (* The second child, [fut2], is unfulfilled. *)
-  let fut2 = edge2.child in
-  assert (not (is_fulfilled fut2));
-  if decisive1 result1 then begin
+  if decisive1 result1 then
     (* [fut1] has returned a decisive result. We do not need to wait for
        [fut2]. Transmit the result to [fut] and deactivate the edge that
        leads from [fut] to [fut2]. *)
-    info "Future %d is fulfilled and stops watching future %d."
-      fut.id edge2.child.id;
-    fulfill fut result1;
-    deactivate_edge edge2
-  end
+    notify_earliest fut edge2 result1
   else
     (* [fut1] has returned a non-decisive result. We need to wait for
        [fut2]. The binary future [fut] degenerates into a proxy future,
