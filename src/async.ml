@@ -1191,7 +1191,7 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
 
 (* -------------------------------------------------------------------------- *)
 
-(* [earliest]. *)
+(* [earliest] *)
 
 (* [notify_earliest fut edge2 result1] is invoked when [fut1] has returned
    [result1]. We do not need to wait for [fut2]. We transmit [result1] to
