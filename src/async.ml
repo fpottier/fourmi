@@ -420,6 +420,9 @@ let[@inline] is_fulfilled (fut : 'a future) : bool =
   | Proxy _ ->
       false
 
+let[@inline] is_unfulfilled fut =
+  not (is_fulfilled fut)
+
 (* [is_active fut] determines whether the future [fut] is active. This is
    done by testing whether its list of active parents is nonempty. *)
 
@@ -468,8 +471,8 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
 let dummy_notify _ =
   ()
 
-  assert (not (is_fulfilled child));
 let new_edge parent child =
+  assert (is_unfulfilled child);
   let notify = dummy_notify in
   let rec edge = { child; prev = edge; next = edge; notify; parent } in
   edge
@@ -840,7 +843,7 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
 
 let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
   assert (
-    not (is_fulfilled fut) ||
+    is_unfulfilled fut ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
   );
   if debug then
@@ -854,8 +857,8 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
    with the same outgoing edge. *)
 
 let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
-  assert (not (is_fulfilled fut));
-  assert (not (is_fulfilled edge.child));
+  assert (is_unfulfilled fut);
+  assert (is_unfulfilled edge.child);
   if debug then
     info "Future %d becomes a proxy future, watching future %d."
       fut.id edge.child.id;
@@ -876,7 +879,7 @@ let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
    This permission is consumed. *)
 
 let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
-  assert (not (is_fulfilled fut1));
+  assert (is_unfulfilled fut1);
   assert (is_active fut1);
   match query fut2 with
   | Result result ->
@@ -916,7 +919,7 @@ let handle_termination s () : unit =
 
 let rec block : state -> bool -> thread -> 'a future -> 'a cont -> unit
 = fun s active thread fut k ->
-  assert (not (is_fulfilled fut));
+  assert (is_unfulfilled fut);
   assert (active = thread_is_active thread);
   (* Create a new edge from [thread] to [fut], so that,
      once [fut] is fulfilled, [thread] is awoken and
@@ -964,6 +967,7 @@ and handle_wait : 'a . state -> 'a future -> 'a cont -> unit
         info "Thread %d continues." (thread_id thread);
       handle s k result
   | Future fut ->
+      assert (is_unfulfilled fut);
       (* The result is not available. Suspend the current thread. *)
       block s true thread fut k;
       (* [thread] is not enqueued again. Run some other thread. *)
@@ -1268,8 +1272,8 @@ let[@inline] notify_earliest fut edge2 result1 =
 (* A race between two distinct, unfulfilled futures. *)
 
 let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
-  assert (not (is_fulfilled fut1));
-  assert (not (is_fulfilled fut2));
+  assert (is_unfulfilled fut1);
+  assert (is_unfulfilled fut2);
   assert (fut1 != fut2);
   let fut = new_future "earliest" in
   let edge1 = new_edge (UF fut) fut1
@@ -1319,8 +1323,8 @@ let notify_earliest_decisive decisive1 fut edge2 result1 =
 (* A race between two distinct, unfulfilled futures. *)
 
 let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
-  assert (not (is_fulfilled fut1));
-  assert (not (is_fulfilled fut2));
+  assert (is_unfulfilled fut1);
+  assert (is_unfulfilled fut2);
   assert (fut1 != fut2);
   let fut = new_future "earliest_decisive" in
   let edge1 = new_edge (UF fut) fut1
