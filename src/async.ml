@@ -356,11 +356,30 @@ let[@inline] yield () =
    Otherwise [query fut] returns [fut] or an equivalent future,
    obtained from [fut] by following a chain of [Proxy] links. *)
 
+(* Once a [Proxy] link has been followed, we cannot reach a fulfilled
+   future. Indeed, once a future is fulfilled, the proxy futures that
+   are watching it are notified and become fulfilled, too. The
+   auxiliary function [query1] verifies this claim. *)
+
 type 'a reply =
   | Result of 'a
   | Future of 'a future
 
-let rec query (fut : 'a future) : 'a reply =
+let rec query1  (fut : 'a future) : 'a reply =
+  match fut.status with
+  | Uninitialized ->
+      assert false
+  | Done _ ->
+      (* Cannot reach a fulfilled future after following a link. *)
+      assert false
+  | Ordinary _
+  | Unary _
+  | Binary _ ->
+      Future fut
+  | Proxy { edge; _ } ->
+      query1 edge.child
+
+let query (fut : 'a future) : 'a reply =
   match fut.status with
   | Uninitialized ->
       assert false
@@ -371,16 +390,27 @@ let rec query (fut : 'a future) : 'a reply =
   | Binary _ ->
       Future fut
   | Proxy { edge; _ } ->
-      query edge.child
+      query1 edge.child
 
-(* [is_fulfilled fut] tests whether the future [fut] has already received
-   a value. *)
+(* [is_fulfilled fut] tests whether [fut] has already received a value. *)
+
+(* We are interested in [fut] itself. If [fut] is a proxy for some other
+   future [fut'], then we do not follow the link. Indeed, once [fut']
+   becomes fulfilled, we do not wish to consider that [fut] implicitly
+   becomes fulfilled at the same time. Instead, we expect [fut'] to
+   explicitly notify [fut], which then becomes fulfilled and no longer
+   points to [fut']. *)
 
 let[@inline] is_fulfilled (fut : 'a future) : bool =
-  match query fut with
-  | Result _ ->
+  match fut.status with
+  | Uninitialized ->
+      assert false
+  | Done _ ->
       true
-  | Future _ ->
+  | Ordinary _
+  | Unary _
+  | Binary _
+  | Proxy _ ->
       false
 
 (* [is_active fut] determines whether the future [fut] is active. This is
