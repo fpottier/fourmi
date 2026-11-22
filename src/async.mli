@@ -1,3 +1,50 @@
+(**This library offers facilities for executing several tasks in parallel.
+
+   A task is executed by a logical {i thread}. A new thread is created by
+   {!spawn} and by several other combinators that use {!spawn} internally.
+
+   At this time, there is no hardware parallelism. All logical threads run
+   on the same hardware thread. Their executions are interleaved at {!yield}
+   points. Therefore, executing two tasks in parallel {i until they both
+   terminate} is {i not} faster than executing these tasks sequentially! The
+   point of this library is to allow {i speculative parallel execution}, by
+   which we mean executing two tasks in parallel {i until one of them
+   terminates}. This is permitted by the combinators {!earliest},
+   {!earliest_decisive}, {!conjunction}, and {!disjunction}.
+
+   Execution is driven by demand. A thread is executed only if and as long
+   as its result appears to be possibly needed. If the result of a currently
+   running thread suddenly becomes unneeded, then this thread is suspended.
+   If its result later becomes possibly needed, then this thread is resumed
+   where it left off, so that no work is duplicated.
+
+   TODO define futures
+
+   To implement demand-driven execution, the library maintains a dynamic
+   dependency graph, whose vertices are futures and where an edge from
+   future {i A} to future {i B} means that {i A} is waiting for {i B} to
+   receive a result. At all times, this graph is acyclic; it is a DAG. The
+   future associated with the main thread, also known as the root future, is
+   the entry point of this graph. At every moment, if a future {i F} is
+   currently reachable from the root future, then the result of {i F} is
+   currently possibly needed, and the thread associated with {i F} is
+   allowed to continue its execution. If, on the contrary, {i F} is
+   currently unreachable, then the result of {i F} is currently unneeded,
+   and this thread is not allowed to run. The structure of the dependency
+   graph changes over time. In particular, edges can appear and disappear.
+   For example, a call to {!wait} creates a new edge. On the contrary, when
+   one the two threads spawned by {!earliest} terminates, the result of the
+   other thread is no longer required, so an edge is destroyed. Therefore, a
+   reachable vertex can become unreachable, and vice-versa. As a result, a
+   thread whose execution has begun can be suspended, and a suspended thread
+   can be resumed.
+
+   If the future that represents the result of a thread becomes unreachable
+   in the eyes of the garbage collector (that is, unreachable from the root
+   future, and also unreachable from every future that the client holds)
+   then this future and this thread are reclaimed by the garbage collector,
+   and this thread is never allowed to continue its execution. *)
+
 (* -------------------------------------------------------------------------- *)
 
 (* {2 Basic Functions} *)
