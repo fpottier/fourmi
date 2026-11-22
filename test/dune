@@ -1,5 +1,6 @@
 (executable
   (name test)
   (libraries fourmi)
+  (flags :standard -w @A-4-40-42-44-70)
   (enabled_if (= %{profile} dev))
 )

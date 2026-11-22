@@ -55,6 +55,8 @@ type syntax =
 let yield s =
   Seq (Yield, s)
 
+let _ = Let (Var 0, Var 0)
+
 (* Types. *)
 
 type ty =
@@ -75,12 +77,16 @@ let var (env : ty env) (target : ty) : syntax choices =
   |> Array.of_list
   |> constants 1
 
-let bool (target : ty) : syntax choices =
-  if target = TyBool then
-    singleton 1 @@ fun () ->
-    BoolLit (Random.bool())
-  else
-    nope
+let rec closed (target : ty) : syntax =
+  match target with
+  | TyBool ->
+      BoolLit (Random.bool())
+  | TyFut target ->
+      Spawn (closed target)
+
+let closed (target : ty) : syntax choices =
+  singleton 1 @@ fun () ->
+  closed target
 
 let rec conjunction (env : ty env) (target : ty) (budget : int) : syntax choices =
   match target with
@@ -117,10 +123,11 @@ and wait (env : ty env) (target : ty) (budget : int) : syntax choices =
 and generate (env : ty env) (target : ty) (budget : int) : syntax =
   assert (0 <= budget);
   if budget = 0 then
-    (* The target size is zero. Produce a variable or a Boolean literal. *)
+    (* The target size is zero. Produce a variable or a closed expression
+       of the desired type. *)
     choose (
       var env target @
-      bool target
+      closed target
     )
   else
     (* The target size is nonzero. *)
@@ -129,11 +136,10 @@ and generate (env : ty env) (target : ty) (budget : int) : syntax =
     let budget = budget - 1 in
     choose (
       conjunction env target budget @
-      disjunction env target budget
+      disjunction env target budget @
+      spawn env target budget @
+      wait env target budget
     )
-        (* TODO *)
-        (* Spawn (generate env budget) *)
-        (* Wait (generate env budget) *)
 
 (* The signature of an implementation. *)
 
