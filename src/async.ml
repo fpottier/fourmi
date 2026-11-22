@@ -686,7 +686,6 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
   end
   else begin
     (* This edge is not alone. Unlink it. *)
-    let next = edge.next in
     prev.next <- next;
     next.prev <- prev;
     if handle parents == edge then Some prev else parents
