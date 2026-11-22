@@ -1,0 +1,5 @@
+(executable
+  (name test)
+  (libraries fourmi)
+  (enabled_if (= %{profile} dev))
+)
