@@ -854,6 +854,9 @@ let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
 (* We assume that [fut1] is active. Thus the new edge toward [fut2]
    is activated immediately. *)
 
+(* The caller must hold the unique permission to fulfill [fut1].
+   This permission is consumed. *)
+
 let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
   assert (not (is_fulfilled fut1));
   assert (is_active fut1);
