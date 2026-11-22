@@ -611,19 +611,20 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
 
 (* [dequeue] potentially overwrites [s.current]. *)
 
+(* We allow the queue to contain inactive threads. This obviates the need to
+   need to remove a thread from the queue when it becomes inactive. This
+   implies that a thread can appear several times in the queue, which
+   implies that a blocked thread can appear in the queue. *)
+
 let rec dequeue (s : state) : unit =
   match Queue.take s.queue with
   | exception Queue.Empty ->
       ()
   | thread ->
-      (* Test whether this thread is active. (We allow the queue to contain
-         inactive threads. This obviates the need to need to remove a thread
-         from the queue when it becomes inactive.) *)
-      if not (thread_is_active thread) then
+      (* If this thread is inactive or blocked, ignore it. *)
+      if thread_is_inactive thread || is_blocked thread then
         dequeue s
       else begin
-        (* We expect this thread not to be waiting on a future. *)
-        assert (thread.awaits = None);
         (* Make this thread the current thread. *)
         s.current <- thread;
         (* Read the thread's resumption, then overwrite this field, so as to
