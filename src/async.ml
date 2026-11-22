@@ -642,10 +642,10 @@ let rec dequeue (s : state) : unit =
 
 (* Operations on bags (doubly-linked lists) of parent edges. *)
 
-(* [handle parents] returns the entry point of the doubly-linked list
+(* [entry parents] returns the entry point of the doubly-linked list
    [parents], under the assumption that this list is nonempty. *)
 
-let[@inline] handle (parents : 'a parents) : 'a edge =
+let[@inline] entry (parents : 'a parents) : 'a edge =
   match parents with
   | None ->
       assert false
@@ -736,14 +736,14 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
   if prev == edge then begin
     (* This edge is alone in the bag. *)
     assert (next == edge);
-    assert (handle parents == edge);
+    assert (entry parents == edge);
     None
   end
   else begin
     (* This edge is not alone. Unlink it. *)
     prev.next <- next;
     next.prev <- prev;
-    if handle parents == edge then Some prev else parents
+    if entry parents == edge then Some prev else parents
   end
 
 (* -------------------------------------------------------------------------- *)
