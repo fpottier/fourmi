@@ -2,6 +2,9 @@
 
 ## Code
 
+* Is it OK to let a continuation be reclaimed by the GC
+  without explicitly discontinuing it?
+
 * Could we get rid of the `State` effect?
 
 * Should `query` perform path compression?
@@ -28,14 +31,22 @@
   its own effect names and/or
   its own abstract type of futures?
 
+* Perhaps prefer to remove a thread from the queue when it becomes
+  inactive or blocked; this would be cleaner (though slower?).
+
 ## Testing
 
-* How can this library be thoroughly tested?
-  Write a Monolith-style test harness by hand.
+* Test with variables of type future, so we get a DAG.
+  Also test with a mutable store of futures,
+  while avoiding deadlocks.
+
+* Can we test that a thread whose future is unreachable is reclaimed
+  by the GC?
 
 ## Release
 
-* Before releasing, use `cppo` to get rid of the debugging support fields.
+* Before releasing, use `cppo` to get rid of the debugging support fields
+  `fut.id` and `edge.parent`.
 
 ## Related Work
 
