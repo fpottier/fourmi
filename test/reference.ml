@@ -1,7 +1,3 @@
-type 'a diagnostic =
-  | Valid of 'a
-  | Invalid of string
-
 type 'a task =
   unit -> 'a
 
@@ -16,6 +12,40 @@ let conjunction task1 task2 =
 
 let disjunction task1 task2 =
   task1() || task2()
+
+type 'a future =
+  'a
+
+let spawn task =
+  task()
+
+let wait fut =
+  fut
+
+let spawn_wait (task : 'a future task) : 'a future =
+  task()
+
+let conjunction_fut fut1 fut2 =
+  fut1 && fut2
+
+let disjunction_fut fut1 fut2 =
+  fut1 || fut2
+
+let return x =
+  x
+
+let bind x f =
+  f x
+
+let map f x =
+  f x
+
+let join x =
+  x
+
+type 'a diagnostic =
+  | Valid of 'a
+  | Invalid of string
 
 (* [earliest] is a non-deterministic operation, so we need to accept
    the candidate's result [result] and to compare it with our possible
