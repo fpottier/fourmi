@@ -297,6 +297,9 @@ let dummy_thread : thread =
 let info format =
   ksprintf (fun msg -> eprintf "[scheduler] %s\n%!" msg) format
 
+let fail format =
+  ksprintf (fun msg -> eprintf "[scheduler] %s\n%!" msg; false) format
+
 let[@inline] thread_id thread =
   match thread.fulfills with
   | UF fut ->
@@ -827,7 +830,11 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
 (* [fut] must not be fulfilled already. *)
 
 let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
-  assert (not (is_fulfilled fut));
+  assert (
+    not (is_fulfilled fut) ||
+    fail "About to fulfill future %d, but it is already fulfilled!" fut.id
+  );
+  info "Future %d is now fulfilled." fut.id;
   let parents = get_parents fut in
   fut.status <- Done { result };
   notify_parents parents result
