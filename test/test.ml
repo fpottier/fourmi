@@ -1,3 +1,4 @@
+open Printf
 open Generate
 
 (* Environments. *)
@@ -55,13 +56,20 @@ type syntax =
 let yield s =
   Seq (Yield, s)
 
-let _ = Let (Var 0, Var 0)
-
 (* Types. *)
 
 type ty =
   | TyBool
   | TyFut of ty
+
+let types =
+  [| TyBool; TyFut TyBool; TyFut (TyFut TyBool) |]
+
+let weights =
+  [| 4; 4; 2 |]
+
+let generate_type () =
+  types.(draw weights)
 
 (* A generator of random well-typed tasks. *)
 
@@ -118,7 +126,15 @@ and wait (env : ty env) (target : ty) (budget : int) : syntax choices =
   singleton 1 @@ fun () ->
   Wait (generate env (TyFut target) budget)
 
-(* TODO produce [let] constructs *)
+and local (env : ty env) (target : ty) (budget : int) : syntax choices =
+  singleton 3 @@ fun () ->
+  let ty = generate_type() in
+  let budget1, budget2 = split budget in
+  Let (
+    generate env ty budget1,
+    let env = extend env ty in
+    generate env target budget2
+  )
 
 and generate (env : ty env) (target : ty) (budget : int) : syntax =
   assert (0 <= budget);
@@ -138,7 +154,8 @@ and generate (env : ty env) (target : ty) (budget : int) : syntax =
       conjunction env target budget @
       disjunction env target budget @
       spawn env target budget @
-      wait env target budget
+      wait env target budget @
+      local env target budget
     )
 
 (* The signature of an implementation. *)
@@ -260,8 +277,12 @@ let iterations =
 let budget =
   1000
 
+let debug =
+  true
+
 let () =
-  for _i = 1 to iterations do
+  for i = 1 to iterations do
+    if debug then eprintf "[test]      Starting test #%d...\n%!" i;
     test budget
   done;
-  Printf.eprintf "Successfully performed %d test runs.\n%!" iterations
+  eprintf "Successfully performed %d test runs.\n%!" iterations
