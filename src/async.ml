@@ -839,7 +839,8 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
 let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
   assert (not (is_fulfilled fut));
   assert (not (is_fulfilled edge.child));
-  info "Future %d becomes a proxy future." fut.id;
+  info "Future %d becomes a proxy future, watching future %d."
+    fut.id edge.child.id;
   let parents = get_parents fut in
   edge.notify <- fulfill fut;
   fut.status <- Proxy { parents; edge }
