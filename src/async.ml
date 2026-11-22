@@ -294,6 +294,9 @@ let dummy_thread : thread =
 
 (* Debugging support. *)
 
+let debug =
+  false
+
 let info format =
   ksprintf (fun msg -> eprintf "[scheduler] %s\n%!" msg) format
 
@@ -451,7 +454,8 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
   let fulfills = UF fut
   and awaits = None in
   let thread = { resumption; fulfills; awaits } in
-  info "Creating thread %d." (thread_id thread);
+  if debug then
+    info "Creating thread %d." (thread_id thread);
   thread
 
 (* [new_edge child] creates a new edge whose target vertex is [child]. The
@@ -482,7 +486,8 @@ let new_future (kind : string) : 'a future =
   let id = !next_future_id in
   next_future_id := id + 1;
   let status = Uninitialized in
-  info "Creating %s future %d." kind id;
+  if debug then
+    info "Creating %s future %d." kind id;
   { id; status }
 
 let[@inline] init_ordinary_future (fut : 'a future) (thread : thread) =
@@ -516,7 +521,8 @@ let[@inline] new_ordinary_future_and_thread
   (* Complete the initialization of [fut]. *)
   init_ordinary_future fut thread;
   (* Done. *)
-  info "Thread %d spawns new thread %d." (thread_id s.current) fut.id;
+  if debug then
+    info "Thread %d spawns new thread %d." (thread_id s.current) fut.id;
   fut, thread
 
 let[@inline] new_ordinary_future s resumption : 'a future =
@@ -541,7 +547,8 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
   assert (thread_is_active thread);
   (* We expect this thread to be unblocked (not waiting). *)
   assert (thread.awaits = None);
-  info "Enqueuing thread %d." (thread_id thread);
+  if debug then
+    info "Enqueuing thread %d." (thread_id thread);
   Queue.add thread s.queue
 
 (* [dequeue s] extracts a thread from the queue, if there is one, and
@@ -571,7 +578,8 @@ let rec dequeue (s : state) : unit =
            we do not mistakenly run this resumption a second time. *)
         let resumption = thread.resumption in
         thread.resumption <- dummy_resumption;
-        info "Now running thread %d." (thread_id thread);
+        if debug then
+          info "Now running thread %d." (thread_id thread);
         execute resumption
       end
 
@@ -789,7 +797,8 @@ fun edge ->
         begin match thread.awaits with
         | None ->
             (* Leave [thread] in the queue, even though it becomes inactive. *)
-            info "Thread %d becomes inactive." (thread_id thread)
+            if debug then
+              info "Thread %d becomes inactive." (thread_id thread)
         | Some (UE edge) ->
             deactivate_edge edge
         end
@@ -834,7 +843,8 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
     not (is_fulfilled fut) ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
   );
-  info "Future %d is now fulfilled." fut.id;
+  if debug then
+    info "Future %d is now fulfilled." fut.id;
   let parents = get_parents fut in
   fut.status <- Done { result };
   notify_parents parents result
@@ -846,8 +856,9 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
 let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
   assert (not (is_fulfilled fut));
   assert (not (is_fulfilled edge.child));
-  info "Future %d becomes a proxy future, watching future %d."
-    fut.id edge.child.id;
+  if debug then
+    info "Future %d becomes a proxy future, watching future %d."
+      fut.id edge.child.id;
   let parents = get_parents fut in
   edge.notify <- fulfill fut;
   fut.status <- Proxy { parents; edge }
@@ -890,7 +901,8 @@ let handle_termination s () : unit =
   (* The current thread has terminated. There may remain some threads
      in the queue, whose results are not needed by this thread. *)
   let thread = s.current in
-  info "Thread %d terminates." (thread_id thread);
+  if debug then
+    info "Thread %d terminates." (thread_id thread);
   (* Run one of the remaining active threads. *)
   dequeue s
 
@@ -941,13 +953,15 @@ and handle_wait : 'a . state -> 'a future -> 'a cont -> unit
   let thread = s.current in
   (* We expect the current thread to be active. *)
   assert (thread_is_active thread);
-  info "Thread %d waits on future %d." (thread_id thread) fut.id;
+  if debug then
+    info "Thread %d waits on future %d." (thread_id thread) fut.id;
   (* The current thread wants to wait on [fut]. *)
   match query fut with
   | Result result ->
       (* The result of [fut] is already available.
          Resume the current thread immediately. *)
-      info "Thread %d continues." (thread_id thread);
+      if debug then
+        info "Thread %d continues." (thread_id thread);
       handle s k result
   | Future fut ->
       (* The result is not available. Suspend the current thread. *)
@@ -965,12 +979,14 @@ and handle_yield (s : state) (k : unit cont) : unit =
      other than the current thread can run. In this case, there is no need
      to insert it into the queue; we would then immediately dequeue it. *)
   if Queue.is_empty s.queue then begin
-    info "Thread %d offers to yield, but no other thread is ready."
-      (thread_id thread);
+    if debug then
+      info "Thread %d offers to yield, but no other thread is ready."
+        (thread_id thread);
     handle s k ()
   end
   else begin
-    info "Thread %d yields." (thread_id thread);
+    if debug then
+      info "Thread %d yields." (thread_id thread);
     thread.resumption <- unit_resumption s k;
     (* The current thread remains active and ready. *)
     enqueue s thread;
@@ -1243,8 +1259,9 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
    [fut] and deactivate the edge that leads from [fut] to [fut2]. *)
 
 let[@inline] notify_earliest fut edge2 result1 =
-  info "Future %d is fulfilled and stops watching future %d."
-    fut.id edge2.child.id;
+  if debug then
+    info "Future %d is fulfilled and stops watching future %d."
+      fut.id edge2.child.id;
   fulfill fut result1;
   deactivate_edge edge2
 
@@ -1257,7 +1274,9 @@ let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   let fut = new_future "earliest" in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
-  info "Future %d watches futures %d and %d." fut.id fut1.id fut2.id;
+  if debug then
+    info "Future %d watches futures %d and %d."
+      fut.id fut1.id fut2.id;
   edge1.notify <- notify_earliest fut edge2;
   edge2.notify <- notify_earliest fut edge1;
   init_binary_future fut edge1 edge2;
@@ -1306,7 +1325,9 @@ let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
   let fut = new_future "earliest_decisive" in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
-  info "Future %d watches futures %d and %d." fut.id fut1.id fut2.id;
+  if debug then
+    info "Future %d watches futures %d and %d."
+      fut.id fut1.id fut2.id;
   edge1.notify <- notify_earliest_decisive decisive1 fut edge2;
   edge2.notify <- notify_earliest_decisive decisive2 fut edge1;
   init_binary_future fut edge1 edge2;
