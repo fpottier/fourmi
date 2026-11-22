@@ -16,8 +16,6 @@
   That would be more efficient than a sequence of calls to `wait`
   or nested calls to `select`.
 
-* `Unary` futures are currently unused.
-
 * Support cancellation. Allow a user task to throw an exception,
   record it in the future, throw it again when someone waits on
   the future.
