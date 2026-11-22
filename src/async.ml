@@ -309,6 +309,42 @@ let[@inline] thread_id thread =
   | UF fut ->
       fut.id
 
+let print_future fut =
+  if debug then
+    match fut.status with
+    | Uninitialized ->
+        info "Future %d is uninitialized." fut.id
+    | Done _ ->
+        info "Future %d is done." fut.id
+    | Ordinary _ ->
+        info "Future %d is ordinary." fut.id
+    | Proxy { edge; _ } ->
+        info "Future %d is a proxy for future %d."
+          fut.id edge.child.id
+    | Unary { edge; _ } ->
+        let UE edge = edge in
+        info "Future %d is a unary future, watching future %d."
+          fut.id edge.child.id
+    | Binary { edge1; edge2; _ } ->
+        let UE edge1 = edge1 in
+        let UE edge2 = edge2 in
+        info "Future %d is a binary future, watching futures %d and %d."
+          fut.id edge1.child.id edge2.child.id
+
+let[@warning "-32"] print_thread thread =
+  if debug then
+    let id = thread_id thread in
+    let UF fut = thread.fulfills in
+    info "Thread %d is in charge of fulfilling future %d." id fut.id;
+    print_future fut;
+    match thread.awaits with
+    | None ->
+        info "Thread %d awaits nothing." id
+    | Some (UE edge) ->
+        let child = edge.child in
+        info "Thread %d awaits future %d." id child.id;
+        print_future child
+
 (* -------------------------------------------------------------------------- *)
 
 (* The scheduler's state. *)
