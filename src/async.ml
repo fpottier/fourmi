@@ -447,6 +447,16 @@ let[@inline] thread_is_active thread =
   | UF fut ->
       is_active fut
 
+let[@inline] thread_is_inactive thread =
+  not (thread_is_active thread)
+
+let[@inline] is_blocked thread =
+  match thread.awaits with
+  | None ->
+      false
+  | Some _ ->
+      true
+
 (* -------------------------------------------------------------------------- *)
 
 (* Creating new threads, edges, and futures. *)
@@ -547,8 +557,12 @@ let new_state () : state =
 (* [enqueue s thread] inserts the thread [thread] into the queue. *)
 
 let[@inline] enqueue (s : state) (thread : thread) : unit =
-  (* We expect this thread to be active. *)
-  assert (thread_is_active thread);
+  (* This thread must be active. *)
+  assert (
+    thread_is_active thread ||
+    fail "About to enqueue thread %d, but it is not active!\n%!"
+      (thread_id thread)
+  );
   (* We expect this thread to be unblocked (not waiting). *)
   assert (thread.awaits = None);
   if debug then
@@ -725,7 +739,12 @@ fun s edge ->
   (* Examine this edge's child, a future. *)
   let fut = edge.child in
   (* We expect [fut] to be unfulfilled. *)
-  assert (not (is_fulfilled fut));
+  assert (
+    is_unfulfilled fut ||
+    fail "About to activate edge %d -> %d, but child future is fulfilled already!"
+      (let UF parent = edge.parent in parent.id)
+      fut.id
+  );
   let was_active = is_active fut in
   (* Insert [edge] into [fut]'s active parent set. *)
   update_parents fut (insert_edge edge);
@@ -741,6 +760,7 @@ fun s edge ->
         | None ->
             (* The thread associated with [fut] is not waiting on a
                future. Then, this thread must be scheduled. *)
+            assert (thread_is_active thread);
             enqueue s thread
         | Some (UE edge) ->
             (* The thread associated with [fut] is waiting on the future
@@ -782,6 +802,10 @@ and activate_untyped_edge s edge =
 
 let rec deactivate_edge : 'a . 'a edge -> unit =
 fun edge ->
+  if debug then begin
+    let UF parent = edge.parent in
+    info "Removing the edge %d -> %d." parent.id edge.child.id
+  end;
   (* Examine this edge's child, a future. *)
   let fut = edge.child in
   (* Because [edge] was active, we expect [fut] to be active. *)
@@ -830,6 +854,10 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
       (* Iteration on a circular doubly-linked list. *)
       let sentinel = edge in
       let rec loop edge =
+        if debug then
+          info "Sending a notification up edge %d -> %d"
+            (let UF parent = edge.parent in parent.id)
+            edge.child.id;
         edge.notify result;
         let next = edge.next in
         if next != sentinel then loop next
@@ -931,8 +959,7 @@ let rec block : state -> bool -> thread -> 'a future -> 'a cont -> unit
      This adds one active parent to [fut]. *)
   if active then
     activate_edge s edge
-  (* [thread] is suspended but remains active.
-     Active means reachable from the root future. *)
+  (* [thread] is blocked but remains possibly active. *)
 
 (* [awaken s thread k result] inserts the thread [thread] into the queue,
    in charge of running continuation [k] applied to result [result]. *)
@@ -942,7 +969,14 @@ let rec block : state -> bool -> thread -> 'a future -> 'a cont -> unit
 
 and awaken : 'a . state -> thread -> 'a cont -> 'a -> unit =
 fun s thread k result ->
-  assert (thread.awaits <> None);
+  (* This thread must be active. *)
+  assert (
+    thread_is_active thread ||
+    fail "About to awaken thread %d, but it is not active!\n%!"
+      (thread_id thread)
+  );
+  (* This thread must be blocked. *)
+  assert (is_blocked thread);
   thread.resumption <- resumption s k result;
   thread.awaits <- None;
   enqueue s thread
@@ -993,6 +1027,7 @@ and handle_yield (s : state) (k : unit cont) : unit =
       info "Thread %d yields." (thread_id thread);
     thread.resumption <- unit_resumption s k;
     (* The current thread remains active and ready. *)
+    assert (thread_is_active thread);
     enqueue s thread;
     (* Run some other thread first. *)
     dequeue s
