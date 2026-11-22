@@ -1247,6 +1247,7 @@ let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   let fut = new_future "earliest" in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
+  info "Future %d watches futures %d and %d." fut.id fut1.id fut2.id;
   edge1.notify <- notify_earliest fut edge2;
   edge2.notify <- notify_earliest fut edge1;
   init_binary_future fut edge1 edge2;
@@ -1295,6 +1296,7 @@ let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
   let fut = new_future "earliest_decisive" in
   let edge1 = new_edge fut1
   and edge2 = new_edge fut2 in
+  info "Future %d watches futures %d and %d." fut.id fut1.id fut2.id;
   edge1.notify <- notify_earliest_decisive decisive1 fut edge2;
   edge2.notify <- notify_earliest_decisive decisive2 fut edge1;
   init_binary_future fut edge1 edge2;
