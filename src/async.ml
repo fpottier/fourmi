@@ -172,11 +172,12 @@ and 'a edge = {
        has been fulfilled. This action function must not have effects.
        This field is declared mutable to facilitate initialization. *)
 
-  (* We could keep a pointer to this edge's parent future, which is the
-     source vertex of this edge, and which awaits the result of the future
-     [child]. At this time, this is not needed. The address of the parent
-     future is usually known to the function [notify]. In other words,
-     [notify] can be viewed as an implicit parent pointer. *)
+  parent : untyped_future;
+    (**A pointer to this edge's parent future, which is the source vertex of
+       this edge, and which awaits the result of the future [child]. At this
+       time, this field is used for debugging purposes only. The address of
+       the parent future is usually known to the function [notify]. In other
+       words, [notify] can be viewed as an implicit parent pointer. *)
 
 }
 
@@ -467,10 +468,10 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
 let dummy_notify _ =
   ()
 
-let new_edge child =
   assert (not (is_fulfilled child));
+let new_edge parent child =
   let notify = dummy_notify in
-  let rec edge = { child; prev = edge; next = edge; notify } in
+  let rec edge = { child; prev = edge; next = edge; notify; parent } in
   edge
 
 (* [new_future kind] creates a new uninitialized future [fut]. The field
@@ -881,7 +882,7 @@ let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
   | Result result ->
       fulfill fut1 result
   | Future fut2 ->
-      let edge = new_edge fut2 in
+      let edge = new_edge (UF fut1) fut2 in
       init_proxy_future fut1 edge;
       activate_edge s edge
 
@@ -920,7 +921,7 @@ let rec block : state -> bool -> thread -> 'a future -> 'a cont -> unit
   (* Create a new edge from [thread] to [fut], so that,
      once [fut] is fulfilled, [thread] is awoken and
      applies [k] to the result of [fut]. *)
-  let edge = new_edge fut in
+  let edge = new_edge thread.fulfills fut in
   edge.notify <- awaken s thread k;
   thread.awaits <- Some (UE edge);
   (* If [thread] is currently active, activate this edge.
@@ -1065,7 +1066,7 @@ let run (type w) (main : w task) : w =
   in
   (* Create an edge whose child is the root future. *)
   let notify _ = () in
-  let edge = new_edge fut in
+  let edge = new_edge (UF dummy_future) fut in
   edge.notify <- notify;
   (* Activate this edge. This activates the root future
      and schedules the main thread for execution. *)
@@ -1223,7 +1224,7 @@ let join (fut : 'a future future) : 'a future =
   | Future fut ->
       (* Create a fresh unary future [join], watching [fut]. *)
       let join = new_future "join" in
-      let edge = new_edge fut in
+      let edge = new_edge (UF join) fut in
       edge.notify <- notify_join join;
       init_unary_future fut edge;
       join
@@ -1271,8 +1272,8 @@ let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
   assert (not (is_fulfilled fut2));
   assert (fut1 != fut2);
   let fut = new_future "earliest" in
-  let edge1 = new_edge fut1
-  and edge2 = new_edge fut2 in
+  let edge1 = new_edge (UF fut) fut1
+  and edge2 = new_edge (UF fut) fut2 in
   if debug then
     info "Future %d watches futures %d and %d."
       fut.id fut1.id fut2.id;
@@ -1322,8 +1323,8 @@ let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
   assert (not (is_fulfilled fut2));
   assert (fut1 != fut2);
   let fut = new_future "earliest_decisive" in
-  let edge1 = new_edge fut1
-  and edge2 = new_edge fut2 in
+  let edge1 = new_edge (UF fut) fut1
+  and edge2 = new_edge (UF fut) fut2 in
   if debug then
     info "Future %d watches futures %d and %d."
       fut.id fut1.id fut2.id;
