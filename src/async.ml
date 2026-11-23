@@ -82,8 +82,9 @@ type 'a cont =
       and if thread T is currently waiting on future F',
       then F currently depends on F'. *)
 
-(* A future is currently active if and only if it is currently reachable from
-   the root future via a path in the dependency graph. *)
+(* An unfulfilled future is currently active if and only if it is currently
+   reachable from the root future via a path in the dependency graph.
+   A fulfilled future is inactive.  *)
 
 (* A thread is said to be ready if it is either currently running or logically
    present in the scheduler's queue. A thread is said to be suspended if it is
@@ -194,6 +195,10 @@ and 'a edge = {
        list of the child's active parents. If this edge is currently
        isolated (that is, not a member of any doubly-linked list) then
        [prev] and [next] point to this edge itself. *)
+
+  mutable active     : bool;
+    (**Whether this field is currently considered active. This field is used
+       for debugging purposes only. *)
 
 }
 
@@ -439,8 +444,17 @@ type state = {
        executed, is overwritten with [dummy_resumption]. *)
 
   queue: thread Queue.t;
-    (**A queue of threads that are active (reachable from the root future)
-       and ready to be executed (not currently awaiting a future).
+    (**A queue of threads all active and unblocked threads. A thread is active
+       if it is reachable from the root future. A thread is unblocked if it is
+       not currently awaiting a future.
+
+       The queue may also contain threads that are NOT active and unblocked.
+       These threads should be ignored; they are not logically part of the
+       queue.
+
+       The flag [thread.enqueued] indicates whether a thread is physically
+       in the queue. It is used to avoid inserting a thread twice into the
+       queue.
 
        Quite surprisingly, extracting ANY resumption out of the queue and
        running this resumption until it terminates effectively runs ALL
@@ -520,6 +534,8 @@ let[@inline] is_unfulfilled fut =
 (* [is_active fut] determines whether the future [fut] is active. This is
    done by testing whether its list of active parents is nonempty. *)
 
+(* If [fut] is fulfilled then it is inactive. *)
+
 let is_active (fut : 'a future) : bool =
   assert (is_initialized fut);
   match fut.status with
@@ -539,30 +555,45 @@ let[@inline] is_inactive fut =
    this result. Otherwise [query fut] returns [fut] or an equivalent future,
    obtained from [fut] by following a chain of [Proxy] links. *)
 
-(* [fut] is not necessarily active. *)
+(* [fut] is not necessarily active. Therefore one should not use [query]
+   directly. Instead, one should use [cleanup_and_query], which performs a
+   cleanup phase, starting at [fut], before attempting to determine whether
+   [fut] has been fulfilled. *)
 
-(* If [fut] is active, then once a [Proxy] link has been followed, we cannot
-   reach a fulfilled future. Indeed, once a future is fulfilled, the active
-   proxy futures that are watching it are notified and become fulfilled, too.
-   However, if [fut] is inactive then it is possible to follow a link and
-   reach a fulfilled future. *)
+(* Once a [Proxy] link has been followed, we cannot reach a fulfilled future.
+   This is true both in the case where [fut] is active and in the case where
+   [fut] is inactive and has been cleaned up. The auxiliary function [query1]
+   verifies this fact. *)
 
 type 'a reply =
   | Result of 'a
   | Future of 'a future
 
-let rec query (fut : 'a future) : 'a reply =
+let rec query1 (fut : 'a future) : 'a reply =
+  assert (is_initialized fut);
   match fut.status with
-  | Uninitialized ->
+  | Uninitialized
+  | Done _ ->
       assert false
-  | Done { result } ->
-      Result result
   | Ordinary _
   | Join _
   | Earliest _ ->
       Future fut
   | Proxy { edge; _ } ->
-      query edge.child
+      query1 edge.child
+
+let query (fut : 'a future) : 'a reply =
+  assert (is_initialized fut);
+  match fut.status with
+  | Done { result } ->
+      Result result
+  | Uninitialized
+  | Ordinary _
+  | Join _
+  | Earliest _ ->
+      Future fut
+  | Proxy { edge; _ } ->
+      query1 edge.child
 
 (* [thread_is_active thread] determines whether the thread [thread] is
    active. This is done by testing whether the future [thread.fulfills]
@@ -585,25 +616,6 @@ let[@inline] is_blocked thread =
 
 let[@inline] is_unblocked thread =
   not (is_blocked thread)
-
-(* [edge_is_active] is used only for debugging. *)
-
-let edge_is_active : type a . a edge -> bool =
-fun edge ->
-  match edge.notify with
-  | NRoot ->
-      true
-  | NAwaken (thread, _k) ->
-      thread_is_active thread
-  | NProxy parent ->
-      is_active parent
-  | NJoin parent ->
-      is_active parent
-  | NEarliest parent ->
-      is_active parent
-
-let edge_is_inactive edge =
-  not (edge_is_active edge)
 
 (* -------------------------------------------------------------------------- *)
 
@@ -628,8 +640,9 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
 
 let new_edge child =
   assert (is_unfulfilled child);
-  let notify = NRoot in
-  let rec edge = { notify; child; prev = edge; next = edge } in
+  let notify = NRoot
+  and active = false in
+  let rec edge = { notify; child; prev = edge; next = edge; active } in
   edge
 
 (* [new_future kind] creates a new uninitialized future [fut]. The field
@@ -994,6 +1007,26 @@ and cleanup_optional_untyped_edge s visited edge =
   | Some (UE edge) ->
       cleanup_edge s visited edge
 
+and cleanup_and_query : 'a . state -> 'a future -> 'a reply =
+fun s fut ->
+  assert (is_initialized fut);
+  (* If [fut] is fulfilled or active then cleanup is not necessary. *)
+  match fut.status with
+  | Uninitialized
+  | Done _ ->
+      query fut
+  | Ordinary { parents; _ }
+  | Proxy { parents; _ }
+  | Join { parents; _ }
+  | Earliest { parents; _ } ->
+      if Option.is_some parents then
+        query fut
+      else
+        (* [fut] is not fulfilled, and is inactive. *)
+        let visited = Mark.fresh() in
+        cleanup_future s visited fut;
+        query fut
+
 (* The activation stage. *)
 
 (* [activate_edge s edge] updates the DAG so as to reflect the fact that the
@@ -1010,11 +1043,12 @@ and cleanup_optional_untyped_edge s visited edge =
 
 and activate_edge : 'a . state -> 'a edge -> unit =
 fun s edge ->
-  assert (edge_is_inactive edge);
+  assert (not edge.active);
+  edge.active <- true;
   (* Because [edge.parent] was inactive until now,
      this edge must be isolated. *)
   assert (edge.prev == edge && edge.next == edge);
-  (* Examine this edge's child, a future. *)
+  (* Activate this edge's child, a future. *)
   let fut = edge.child in
   (* We expect [fut] to be unfulfilled. *)
   assert (
@@ -1081,6 +1115,8 @@ fun edge ->
   if debug then
     info "Removing the edge %s -> %d."
       (show_edge_parent edge) edge.child.id;
+  assert edge.active;
+  edge.active <- false;
   (* Examine this edge's child, a future. *)
   let fut = edge.child in
   (* Because [edge] was active, we expect [fut] to be active. *)
@@ -1125,13 +1161,14 @@ fun edge ->
      and the future [edge.child] has just been fulfilled.
    - It can be invoked during the cleanup stage;
      then [edge] is inactive and is possibly (but not certainly)
-     about to be activated. *)
+     about to be activated.
+     This mode of invocation is NOT used for earliest futures. *)
 
 and notify : type a . state -> a edge -> a -> unit =
 fun s edge result ->
-  if debug then
+  if debug && edge.notify <> NRoot then
     info "Sending a notification up the %s edge %s -> %d"
-      (if edge_is_active edge then "active" else "inactive")
+      (if edge.active then "active" else "inactive")
       (show_edge_parent edge) edge.child.id;
   assert (is_fulfilled edge.child);
   match edge.notify with
@@ -1146,6 +1183,7 @@ fun s edge result ->
       assert (is_join parent);
       link s parent result
   | NEarliest parent ->
+      assert edge.active;
       assert (is_active parent);
       assert (is_earliest parent);
       let other, decisive =
@@ -1239,7 +1277,7 @@ and link : type a . state -> a future -> a future -> unit =
 fun s fut1 fut2 ->
   assert (is_unfulfilled fut1);
   assert (is_active fut1);
-  match query fut2 with
+  match cleanup_and_query s fut2 with
   | Result result ->
       fulfill s fut1 result
   | Future fut2 ->
@@ -1275,6 +1313,10 @@ and handle_termination s () : unit =
 (* [active] determines whether the thread [thread] is currently active,
    that is, reachable from the root future. *)
 
+(* The future [fut] must be the result of a call to [cleanup_and_query].
+   Therefore it has been cleaned up already. Therefore using [activate_edge]
+   is safe. *)
+
 and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
 = fun s active thread fut k ->
   assert (is_unfulfilled fut);
@@ -1294,9 +1336,8 @@ and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
 (* [awaken s thread k result] awakens the thread [thread], in charge of
    running continuation [k] applied to result [result]. This thread must
    be currently blocked. It is not necessarily currently active. If it is
-   active then it is inserted into the queue. *)
-(* TODO do we correctly maintain the invariant that every active unblocked
-   thread is in the queue? *)
+   active then it is inserted into the queue. Thus, we maintain the fact
+   that every active and unblocked thread is in the queue. *)
 
 and awaken : 'a . state -> thread -> 'a cont -> 'a -> unit =
 fun s thread k result ->
@@ -1318,7 +1359,7 @@ and handle_wait : 'a . state -> 'a future -> 'a cont -> unit
   if debug then
     info "Thread %d waits on future %d." (thread_id thread) fut.id;
   (* The current thread wants to wait on [fut]. *)
-  match query fut with
+  match cleanup_and_query s fut with
   | Result result ->
       (* The result of [fut] is already available.
          Resume the current thread immediately. *)
@@ -1436,7 +1477,8 @@ let run (type w) (main : w task) : w =
   activate_edge s edge;
   (* Launch the scheduler. *)
   dequeue s;
-  (* Extract the result. *)
+  (* Extract the result. Cleanup is not required here. *)
+  assert (is_fulfilled fut || is_active fut);
   match query fut with
   | Result result ->
       result
@@ -1492,11 +1534,11 @@ let[@inline] spawn_wait (task : 'a future task) : 'a future =
    [fut1]. *)
 
 let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
-  match query fut1 with
+  let s = get_state() in
+  match cleanup_and_query s fut1 with
   | Result result ->
       spawn (fun () -> f result)
   | Future fut1 ->
-      let s = get_state() in
       let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
       (* Block the new thread on [fut1]. Once the thread awakens,
          run [f] and fulfill [fut] with its result. *)
@@ -1514,11 +1556,11 @@ let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
    waiting for [fut1]. *)
 
 let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
-  match query fut1 with
+  let s = get_state() in
+  match cleanup_and_query s fut1 with
   | Result result ->
       spawn_wait (fun () -> task result)
   | Future fut1 ->
-      let s = get_state() in
       let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
       (* Block the new thread on [fut1]. Once the thread awakens,
          run [task] and change [fut] into a proxy for its result. *)
@@ -1575,7 +1617,8 @@ let _join (fut : 'a future future) : 'a future =
    into a proxy future for [result]. *)
 
 let join (fut : 'a future future) : 'a future =
-  match query fut with
+  let s = get_state() in
+  match cleanup_and_query s fut with
   | Result result ->
       result
   | Future fut ->
@@ -1637,7 +1680,8 @@ let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
 (* A race between two arbitrary futures. *)
 
 let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
-  match query fut1, query fut2 with
+  let s = get_state() in
+  match cleanup_and_query s fut1, cleanup_and_query s fut2 with
   | Result result1, _ ->
       if decisive1 result1 then fut1 else fut2
   | _, Result result2 ->
