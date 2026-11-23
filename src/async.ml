@@ -442,6 +442,20 @@ let[@inline] yield () =
 
 (* Basic tests and queries on futures and threads. *)
 
+(* The following little functions are used in assertions. *)
+
+let is_ordinary fut =
+  match fut.status with Ordinary _ -> true | _ -> false
+
+let is_proxy fut =
+  match fut.status with Proxy _ -> true | _ -> false
+
+let is_join fut =
+  match fut.status with Join _ -> true | _ -> false
+
+let is_earliest fut =
+  match fut.status with Earliest _ -> true | _ -> false
+
 (* [is_initialized fut] tests whether [fut] has been initialized. *)
 
 let[@inline] is_initialized (fut : 'a future) : bool =
@@ -521,6 +535,7 @@ let rec query (fut : 'a future) : 'a reply =
 let[@inline] thread_is_active thread =
   match thread.fulfills with
   | UF fut ->
+      assert (is_ordinary fut); (* TODO fails at test #5112 *)
       is_active fut
 
 let[@inline] thread_is_inactive thread =
@@ -910,7 +925,8 @@ fun edge ->
       deactivate_edge edge2
 
 (* [notify edge result] sends a notification up along the edge [edge]. The
-   parent is notified that the child has produced the result [result]. *)
+   parent is notified that the child has produced the result [result]. The
+   parent must be active. *)
 
 let rec notify : type a . state -> a edge -> a -> unit =
 fun s edge result ->
@@ -924,12 +940,19 @@ fun s edge result ->
       (* The child is the root future. There is no parent. *)
       ()
   | NAwaken (thread, k) ->
+      assert (thread_is_active thread);
       awaken s thread k result
   | NProxy parent ->
+      assert (is_active parent);
+      assert (is_proxy parent);
       fulfill s parent result
   | NJoin parent ->
+      assert (is_active parent);
+      assert (is_join parent);
       link s parent result
   | NEarliest parent ->
+      assert (is_active parent);
+      assert (is_earliest parent);
       let other, decisive =
         match parent.status with
         | Earliest { edge1; edge2; decisive1; decisive2; _ } ->
