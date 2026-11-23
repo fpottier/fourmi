@@ -154,11 +154,7 @@ and 'a edge = {
 
   mutable notify     : 'a notify;
     (**Information on how to notify this edge's parent future once the child
-       future produces a result. This information describes the relationship
-       between the parent and child. It also represents a defunctionalized
-       function of type [notify : 'a -> unit]. Although it can take various
-       forms, it always includes a pointer to this edge's parent future,
-       which is the source vertex of this edge. *)
+       future produces a result. *)
 
   child              : 'a future;
     (**This edge's child future. It is the target of this directed edge.
@@ -176,13 +172,30 @@ and 'a edge = {
 
 }
 
-(* TODO comment *)
+(**A value of type ['a notify] decorates an edge of type ['a edge]. It
+   describes the relationship between the parent and child. It can also
+   be viewed as a defunctionalized function [notify : 'a -> unit]. *)
 and 'a notify =
   | NRoot     : 'a notify
+      (**The child is the root future. There is no parent. *)
+
   | NAwaken   : thread * 'a cont -> 'a notify
+      (**The parent is an ordinary future. Therefore a thread [thread]
+         is waiting on the child's result to run a continuation [k]. *)
+
   | NProxy    : 'a future -> 'a notify
+      (**The parent is a proxy future. Its result has the same type as
+         the child's result. *)
+
   | NJoin     : 'a future -> 'a future notify
-  | NEarliest : 'a future -> 'a notify (* TODO also store child's index? *)
+      (**The parent is a join future. If the child's result has type
+         ['a future] then the parent's result has type ['a]. *)
+
+  | NEarliest : 'a future -> 'a notify
+      (**The parent is an earliest future. Its result has the same type as
+         the child's result. We might wish to store the index of the child
+         in the sequence of the parent's children; this is not currently
+         done. *)
 
 (* [untyped_edge] is the existential type [∃'a. 'a edge]. It is an edge
    where the child's result type is unknown. The data constructor [UE]
