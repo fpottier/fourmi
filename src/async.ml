@@ -43,9 +43,8 @@ type 'a cont =
 (* We work with two main kinds of objects, namely futures and threads.
 
    A future is a placeholder for a result that is perhaps not yet available,
-   but will become available in the future, once it has been computed. It
-   can be viewed roughly as a reference that contains either nothing yet or
-   a result.
+   but will become available once it has been computed. It can be viewed
+   roughly as a reference that contains either nothing yet or a result.
 
    A thread is a computation whose ultimate aim is to fulfill one future. *)
 
@@ -125,6 +124,11 @@ type 'a cont =
    fact a circular doubly-linked list of edges, so an edge can be added or
    removed in constant time. *)
 
+(* TODO revisit the terminology binary future, etc. *)
+(* TODO explain more clearly that we maintain down edges everywhere
+   but we maintain up edges only in the active (reachable) part of
+   the graph  *)
+
 type thread = {
 
   mutable resumption : unit resumption;
@@ -153,6 +157,13 @@ type thread = {
 
 and 'a edge = {
 
+  parent             : untyped_future;
+    (**A pointer to this edge's parent future, which is the source vertex of
+       this edge, and which awaits the result of the future [child]. At this
+       time, this field is used for debugging purposes only. The address of
+       the parent future is usually known to the function [notify]. In other
+       words, [notify] can be viewed as an implicit parent pointer. *)
+
   child              : 'a future;
     (**This edge's child future. It is the target of this directed edge.
 
@@ -171,13 +182,6 @@ and 'a edge = {
     (**The action that must be taken by this parent once the child future
        has been fulfilled. This action function must not have effects.
        This field is declared mutable to facilitate initialization. *)
-
-  parent : untyped_future;
-    (**A pointer to this edge's parent future, which is the source vertex of
-       this edge, and which awaits the result of the future [child]. At this
-       time, this field is used for debugging purposes only. The address of
-       the parent future is usually known to the function [notify]. In other
-       words, [notify] can be viewed as an implicit parent pointer. *)
 
 }
 
@@ -508,11 +512,11 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
     info "Creating thread %d." (thread_id thread);
   thread
 
-(* [new_edge child] creates a new edge whose target vertex is [child]. The
-   field [edge.notify] is not initialized, and must be initialized before
+(* [new_edge parent child] creates a new edge whose target vertex is [child].
+   The field [edge.notify] is not initialized, and must be initialized before
    this edge is used. This two-step initialization process is necessary
-   because, when creating a binary future, we need to create two edges
-   whose [notify] functions point to the other edge. *)
+   because, when creating a binary future, we need to create two edges whose
+   [notify] functions point to the other edge. *)
 
 let dummy_notify _ =
   ()
@@ -520,7 +524,7 @@ let dummy_notify _ =
 let new_edge parent child =
   assert (is_unfulfilled child);
   let notify = dummy_notify in
-  let rec edge = { child; prev = edge; next = edge; notify; parent } in
+  let rec edge = { parent; child; prev = edge; next = edge; notify } in
   edge
 
 (* [new_future kind] creates a new uninitialized future [fut]. The field
@@ -764,9 +768,15 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
    the number of active parents of its source vertex changes from 0 to 1.
    Therefore an edge is traversed at most once. *)
 
-(* We expect the future [edge.child] to be unfulfilled, i.e., not [Done].
-   Indeed, once a future is fulfilled, its parents are notified and the
-   edges that point down to this future disappear. *)
+(* One might expect the future [edge.child] to be unfulfilled. Indeed, once
+   a future is fulfilled, its active parents are notified and the edges that
+   point down to this future disappear. However, if the parent was inactive
+   when the child future was resolved, then the edge did not exist at that
+   time (it was not a member of the child's list of active parents), so the
+   parent was not notified. *)
+
+(* TODO decide what to do when a future has one (or more!) fulfilled children
+   at the moment when this future is activated again. *)
 
 let rec activate_edge : 'a . state -> 'a edge -> unit =
 fun s edge ->
