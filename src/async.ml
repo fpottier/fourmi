@@ -912,8 +912,8 @@ fun edge ->
 (* [notify edge result] sends a notification up along the edge [edge]. The
    parent is notified that the child has produced the result [result]. *)
 
-let rec notify : type a . a edge -> a -> unit =
-fun edge result ->
+let rec notify : type a . state -> a edge -> a -> unit =
+fun s edge result ->
   if debug then
     info "Sending a notification up edge %s -> %d"
       (show_edge_parent edge) edge.child.id;
@@ -921,14 +921,13 @@ fun edge result ->
   (* TODO might wish to assert that parent status is consistent with [edge.notify] *)
   match edge.notify with
   | NRoot ->
+      (* The child is the root future. There is no parent. *)
       ()
   | NAwaken (thread, k) ->
-      let s = get_state() in (* TODO avoid *)
       awaken s thread k result
   | NProxy parent ->
-      fulfill parent result
+      fulfill s parent result
   | NJoin parent ->
-      let s = get_state() in (* TODO avoid *)
       link s parent result
   | NEarliest parent ->
       let other, decisive =
@@ -946,7 +945,7 @@ fun edge result ->
         if debug then
           info "Future %d is fulfilled and stops watching future %d."
             parent.id other.child.id;
-        fulfill parent result;
+        fulfill s parent result;
         deactivate_edge other
       end
       else
@@ -955,11 +954,11 @@ fun edge result ->
            watching just the other child. *)
         init_proxy_future parent other
 
-(* [notify_parents parents result] iterates on the (possibly empty) bag of
+(* [notify_parents s parents result] iterates on the (possibly empty) bag of
    edges [parents]. Every parent vertex is notified that the result of the
    child vertex is [result]. *)
 
-and notify_parents (parents : 'a edge option) (result : 'a) : unit =
+and notify_parents (s : state) (parents : 'a edge option) (result : 'a) : unit =
   match parents with
   | None ->
       ()
@@ -967,19 +966,19 @@ and notify_parents (parents : 'a edge option) (result : 'a) : unit =
       (* Iteration on a circular doubly-linked list. *)
       let sentinel = edge in
       let rec loop edge =
-        notify edge result;
+        notify s edge result;
         let next = edge.next in
         if next != sentinel then loop next
       in
       loop edge
 
-(* [fulfill fut result] fulfills the future [fut] with the result [result]
+(* [fulfill s fut result] fulfills the future [fut] with the result [result]
    and notifies [fut]'s parents in the dependency graph. *)
 
 (* [fut] must not be fulfilled already. *)
 
-and fulfill : 'a . 'a future -> 'a -> unit =
-fun fut result ->
+and fulfill : 'a . state -> 'a future -> 'a -> unit =
+fun s fut result ->
   assert (
     is_unfulfilled fut ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
@@ -988,7 +987,7 @@ fun fut result ->
     info "Future %d is now fulfilled." fut.id;
   let parents = get_parents fut in
   fut.status <- Done { result };
-  notify_parents parents result
+  notify_parents s parents result
 
 (* [init_proxy_future fut edge] changes the existing future [fut],
    which has an existing outgoing edge [edge], into a proxy future
@@ -1023,7 +1022,7 @@ fun s fut1 fut2 ->
   assert (is_active fut1);
   match query fut2 with
   | Result result ->
-      fulfill fut1 result
+      fulfill s fut1 result
   | Future fut2 ->
       let edge = new_edge fut2 in
       init_proxy_future fut1 edge;
@@ -1212,7 +1211,7 @@ let run (type w) (main : w task) : w =
   (* Create the root future and the main thread, which runs [main()]
      and writes its result into the root future. *)
   let fut = new_ordinary_future s @@ fun fut ->
-    let main () = fulfill fut (main()) in
+    let main () = fulfill s fut (main()) in
     unit_resumption s (fiber main)
   in
   (* Create an edge whose child is the root future. *)
@@ -1254,7 +1253,7 @@ let[@inline] spawn (task : 'a task) : 'a future =
   let s = get_state() in
   new_ordinary_future s @@ fun fut ->
   (* Run [task] and fulfill [fut] with its result. *)
-  let child () = fulfill fut (task()) in
+  let child () = fulfill s fut (task()) in
   unit_resumption s (fiber child)
 
 (* [spawn_wait task] creates a new thread in charge of running [task] and
@@ -1287,7 +1286,7 @@ let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
       let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
       (* Block the new thread on [fut1]. Once the thread awakens,
          run [f] and fulfill [fut] with its result. *)
-      let resume result = fulfill fut (f result) in
+      let resume result = fulfill s fut (f result) in
       block s false thread fut1 (fiber resume);
       fut
 
