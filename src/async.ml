@@ -27,11 +27,6 @@ let[@inline] execute (task : 'a resumption) : 'a =
   | Resumption task ->
       task()
 
-(* An observer of type ['a observer] expects a value of type ['a]. *)
-
-type 'a observer =
-  'a -> unit
-
 (* A shallow continuation is not wrapped in an effect handler.
    It is executed by our effect handler, [handle]. *)
 
@@ -57,12 +52,12 @@ type 'a cont =
    The future created by [run] is the root future. The main thread is in
    charge of fulfilling this future. It is an ordinary future. *)
 
-(* A proxy future or a binary future does not have a corresponding thread.
-   A proxy future watches one future and adopts its result (unmodified).
-   A binary future watches two futures and computes its own result based
-   on their results. Possibly one result is enough for it to produce
-   a result. If it is not enough, then a binary future changes itself into
-   a proxy future. *)
+(* A proxy future, a join future, or an earliest future does not have a
+   corresponding thread. A proxy future watches one future and adopts its
+   result. A join future watches one future and transforms itself into a proxy
+   for its result. An earliest future watches two futures and either adopts
+   the first result that is produced or transforms itself into a proxy for its
+   remaining child. *)
 
 (* Futures and threads form a dependency graph, whose edges evolve over time:
    1- An ordinary future depends on the thread that will fulfill this future.
@@ -124,7 +119,6 @@ type 'a cont =
    fact a circular doubly-linked list of edges, so an edge can be added or
    removed in constant time. *)
 
-(* TODO revisit the terminology binary future, etc. *)
 (* TODO explain more clearly that we maintain down edges everywhere
    but we maintain up edges only in the active (reachable) part of
    the graph  *)
@@ -134,8 +128,9 @@ type thread = {
   mutable resumption : unit resumption;
     (**The resumption that this thread intends to execute.
 
-       This field is updated when the thread is suspended by [wait] or
-       [yield]. *)
+       While this thread is the current thread, this field contains the
+       value [dummy_resumption]. Otherwise, it contains a meaningful
+       value. *)
 
   fulfills           : untyped_future;
     (**The future that this thread intends to fulfill.
@@ -157,12 +152,13 @@ type thread = {
 
 and 'a edge = {
 
-  parent             : untyped_future;
-    (**A pointer to this edge's parent future, which is the source vertex of
-       this edge, and which awaits the result of the future [child]. At this
-       time, this field is used for debugging purposes only. The address of
-       the parent future is usually known to the function [notify]. In other
-       words, [notify] can be viewed as an implicit parent pointer. *)
+  mutable notify     : 'a notify;
+    (**Information on how to notify this edge's parent future once the child
+       future produces a result. This information describes the relationship
+       between the parent and child. It also represents a defunctionalized
+       function of type [notify : 'a -> unit]. Although it can take various
+       forms, it always includes a pointer to this edge's parent future,
+       which is the source vertex of this edge. *)
 
   child              : 'a future;
     (**This edge's child future. It is the target of this directed edge.
@@ -178,12 +174,15 @@ and 'a edge = {
        isolated (that is, not a member of any doubly-linked list) then
        [prev] and [next] point to this edge itself. *)
 
-  mutable notify     : 'a observer;
-    (**The action that must be taken by this parent once the child future
-       has been fulfilled. This action function must not have effects.
-       This field is declared mutable to facilitate initialization. *)
-
 }
+
+(* TODO comment *)
+and 'a notify =
+  | NRoot     : 'a notify
+  | NAwaken   : thread * 'a cont -> 'a notify
+  | NProxy    : 'a future -> 'a notify
+  | NJoin     : 'a future -> 'a future notify
+  | NEarliest : 'a future -> 'a notify (* TODO also store child's index? *)
 
 (* [untyped_edge] is the existential type [∃'a. 'a edge]. It is an edge
    where the child's result type is unknown. The data constructor [UE]
@@ -241,35 +240,39 @@ and 'a status =
         (**A downward edge to the future that this future watches. *)
 
     }
-      (**A proxy future, whose result has not yet been computed.
-         A proxy future copies the result of its child,
-         without transforming it; that is, the function [edge.notify]
-         fulfills the proxy future with the result of the child future.  *)
+      (**A proxy future copies the result of its child.  *)
 
-  | Unary of {
+  | Join of {
 
       mutable parents : 'a parents;
         (**A possibly empty bag of this future's active incoming edges. *)
 
-      edge            : untyped_edge;
+      edge            : 'a future edge;
         (**A downward edge to the future that this future watches. *)
 
     }
-      (**A unary future, whose result has not yet been computed.
-         A unary future transforms the result of its child.  *)
+      (**A join future transforms itself into a proxy for the
+         future produced by its child.  *)
 
-  | Binary of {
+  | Earliest of {
 
       mutable parents : 'a parents;
         (**A possibly empty bag of this future's active incoming edges. *)
 
-      edge1 : untyped_edge;
-      edge2 : untyped_edge;
-        (**Downward edges toward the two futures that this future watches. *)
+      edge1 : 'a edge;
+      edge2 : 'a edge;
+        (**Downward edges toward the futures that this future watches. *)
+
+      decisive1 : 'a -> bool;
+      decisive2 : 'a -> bool;
+        (**[decisive1 result1] examines the result [result1] produced by the
+           first child and determines whether this result is decisive, that
+           is, whether it should be made the result of this future. If so,
+           this becomes fulfilled. Otherwise, this future stops watching this
+           child and becomes a proxy for its remaining child. *)
 
     }
-      (**A binary future, none of whose children has been fulfilled.
-         A binary future watches two futures. *)
+      (**An "earliest" future watches an array of futures. *)
 
 (**A bag of edges is a possibly empty doubly-linked list of edges. *)
 and 'a parents =
@@ -302,38 +305,47 @@ let dummy_thread : thread =
 let debug =
   false
 
+(* [info format ...] prints a message. Use [if debug then info format ...]. *)
+
 let info format =
   ksprintf (fun msg -> eprintf "[scheduler] %s\n%!" msg) format
 
+(* [fail format ...] prints a message and returns [false]. Use it inside
+   an assertion, after determining that the Boolean condition is false. *)
+
 let fail format =
   ksprintf (fun msg -> eprintf "[scheduler] %s\n%!" msg; false) format
+
+(* By convention, the ID of a thread is the ID of its target future. *)
 
 let[@inline] thread_id thread =
   match thread.fulfills with
   | UF fut ->
       fut.id
 
+(* [print_future] prints internal information about a future. *)
+
 let print_future fut =
   if debug then
     match fut.status with
     | Uninitialized ->
-        info "Future %d is uninitialized." fut.id
+        info "  Future %d is uninitialized." fut.id
     | Done _ ->
-        info "Future %d is done." fut.id
+        info "  Future %d is done." fut.id
     | Ordinary _ ->
-        info "Future %d is ordinary." fut.id
+        info "  Future %d is ordinary." fut.id
     | Proxy { edge; _ } ->
-        info "Future %d is a proxy for future %d."
+        info "  Future %d is a proxy for future %d."
           fut.id edge.child.id
-    | Unary { edge; _ } ->
-        let UE edge = edge in
-        info "Future %d is a unary future, watching future %d."
+    | Join { edge; _ } ->
+        info "  Future %d is a join future, watching future %d."
           fut.id edge.child.id
-    | Binary { edge1; edge2; _ } ->
-        let UE edge1 = edge1 in
-        let UE edge2 = edge2 in
-        info "Future %d is a binary future, watching futures %d and %d."
+    | Earliest { edge1; edge2; _ } ->
+        info "  Future %d is an earliest future, watching futures %d and %d."
           fut.id edge1.child.id edge2.child.id
+
+(* [print_future] prints internal information about a thread, about
+   its target future, and about the future that it awaits. *)
 
 let[@warning "-32"] print_thread thread =
   if debug then
@@ -348,6 +360,23 @@ let[@warning "-32"] print_thread thread =
         let child = edge.child in
         info "Thread %d awaits future %d." id child.id;
         print_future child
+
+(* [show_edge_parent edge] returns the identifier the source vertex of the
+   edge [edge] as a string. *)
+
+let show_edge_parent : type a . a edge -> string =
+fun edge ->
+  match edge.notify with
+  | NRoot ->
+      "<root>"
+  | NAwaken (thread, _) ->
+      sprintf "%d" (thread_id thread)
+  | NProxy parent ->
+      sprintf "%d" parent.id
+  | NJoin parent ->
+      sprintf "%d" parent.id
+  | NEarliest parent ->
+      sprintf "%d" parent.id
 
 (* -------------------------------------------------------------------------- *)
 
@@ -398,65 +427,30 @@ let[@inline] yield () =
 
 (* -------------------------------------------------------------------------- *)
 
-(* If the result of the future [fut] is already available
-   then [query fut] returns this result.
-   Otherwise [query fut] returns [fut] or an equivalent future,
-   obtained from [fut] by following a chain of [Proxy] links. *)
+(* Basic tests and queries on futures and threads. *)
 
-(* Once a [Proxy] link has been followed, we cannot reach a fulfilled
-   future. Indeed, once a future is fulfilled, the proxy futures that
-   are watching it are notified and become fulfilled, too. The
-   auxiliary function [query1] verifies this claim. *)
+(* [is_initialized fut] tests whether [fut] has been initialized. *)
 
-type 'a reply =
-  | Result of 'a
-  | Future of 'a future
-
-let rec query1  (fut : 'a future) : 'a reply =
-  match fut.status with
-  | Uninitialized ->
-      assert false
-  | Done _ ->
-      (* Cannot reach a fulfilled future after following a link. *)
-      assert false
-  | Ordinary _
-  | Unary _
-  | Binary _ ->
-      Future fut
-  | Proxy { edge; _ } ->
-      query1 edge.child
-
-let query (fut : 'a future) : 'a reply =
-  match fut.status with
-  | Uninitialized ->
-      assert false
-  | Done { result } ->
-      Result result
-  | Ordinary _
-  | Unary _
-  | Binary _ ->
-      Future fut
-  | Proxy { edge; _ } ->
-      query1 edge.child
+let[@inline] is_initialized (fut : 'a future) : bool =
+  match fut.status with Uninitialized -> false | _ -> true
 
 (* [is_fulfilled fut] tests whether [fut] has already received a value. *)
 
-(* We are interested in [fut] itself. If [fut] is a proxy for some other
-   future [fut'], then we do not follow the link. Indeed, once [fut']
-   becomes fulfilled, we do not wish to consider that [fut] implicitly
-   becomes fulfilled at the same time. Instead, we expect [fut'] to
-   explicitly notify [fut], which then becomes fulfilled and no longer
-   points to [fut']. *)
+(* We are interested in [fut] itself. If [fut] is a proxy for [fut'], then we
+   do not follow the link. Indeed, once [fut'] becomes fulfilled, we do not
+   wish to consider that [fut] implicitly becomes fulfilled at the same time.
+   Instead, assuming that [fut] is active, we expect [fut'] to notify [fut],
+   which then becomes fulfilled and no longer points to [fut']. *)
 
 let[@inline] is_fulfilled (fut : 'a future) : bool =
+  assert (is_initialized fut);
   match fut.status with
-  | Uninitialized ->
-      assert false
   | Done _ ->
       true
+  | Uninitialized
   | Ordinary _
-  | Unary _
-  | Binary _
+  | Join _
+  | Earliest _
   | Proxy _ ->
       false
 
@@ -467,16 +461,45 @@ let[@inline] is_unfulfilled fut =
    done by testing whether its list of active parents is nonempty. *)
 
 let is_active (fut : 'a future) : bool =
+  assert (is_initialized fut);
   match fut.status with
-  | Uninitialized ->
-      assert false
+  | Uninitialized
   | Done _ ->
       false
   | Ordinary { parents; _ }
   | Proxy { parents; _ }
-  | Unary { parents; _ }
-  | Binary { parents; _ }
+  | Join { parents; _ }
+  | Earliest { parents; _ }
       -> Option.is_some parents
+
+(* If the result of the future [fut] is available then [query fut] returns
+   this result. Otherwise [query fut] returns [fut] or an equivalent future,
+   obtained from [fut] by following a chain of [Proxy] links. *)
+
+(* [fut] is not necessarily active. *)
+
+(* If [fut] is active, then once a [Proxy] link has been followed, we cannot
+   reach a fulfilled future. Indeed, once a future is fulfilled, the active
+   proxy futures that are watching it are notified and become fulfilled, too.
+   However, if [fut] is inactive then it is possible to follow a link and
+   reach a fulfilled future. *)
+
+type 'a reply =
+  | Result of 'a
+  | Future of 'a future
+
+let rec query (fut : 'a future) : 'a reply =
+  match fut.status with
+  | Uninitialized ->
+      assert false
+  | Done { result } ->
+      Result result
+  | Ordinary _
+  | Join _
+  | Earliest _ ->
+      Future fut
+  | Proxy { edge; _ } ->
+      query edge.child
 
 (* [thread_is_active thread] determines whether the thread [thread] is
    active. This is done by testing whether the future [thread.fulfills]
@@ -490,12 +513,14 @@ let[@inline] thread_is_active thread =
 let[@inline] thread_is_inactive thread =
   not (thread_is_active thread)
 
+(* [is_blocked thread] determines whether [thread] is blocked, that is,
+   waiting for the result of a future to become available. *)
+
 let[@inline] is_blocked thread =
-  match thread.awaits with
-  | None ->
-      false
-  | Some _ ->
-      true
+  match thread.awaits with None -> false | Some _ -> true
+
+let[@inline] is_unblocked thread =
+  not (is_blocked thread)
 
 (* -------------------------------------------------------------------------- *)
 
@@ -512,19 +537,15 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
     info "Creating thread %d." (thread_id thread);
   thread
 
-(* [new_edge parent child] creates a new edge whose target vertex is [child].
-   The field [edge.notify] is not initialized, and must be initialized before
+(* [new_edge child] creates a new edge whose target vertex is [child]. The
+   edge's [notify] field is not initialized, and must be initialized before
    this edge is used. This two-step initialization process is necessary
-   because, when creating a binary future, we need to create two edges whose
-   [notify] functions point to the other edge. *)
+   because the parent future and the edge point to each other. *)
 
-let dummy_notify _ =
-  ()
-
-let new_edge parent child =
+let new_edge child =
   assert (is_unfulfilled child);
-  let notify = dummy_notify in
-  let rec edge = { parent; child; prev = edge; next = edge; notify } in
+  let notify = NRoot in
+  let rec edge = { notify; child; prev = edge; next = edge } in
   edge
 
 (* [new_future kind] creates a new uninitialized future [fut]. The field
@@ -548,16 +569,13 @@ let[@inline] init_ordinary_future (fut : 'a future) (thread : thread) =
   let parents = None in
   fut.status <- Ordinary { parents; thread }
 
-let[@inline] init_unary_future fut edge =
+let[@inline] init_join_future fut edge =
   let parents = None in
-  let edge = UE edge in
-  fut.status <- Unary { parents; edge }
+  fut.status <- Join { parents; edge }
 
-let[@inline] init_binary_future fut edge1 edge2 =
+let[@inline] init_earliest_future fut edge1 edge2 decisive1 decisive2 =
   let parents = None in
-  let edge1 = UE edge1
-  and edge2 = UE edge2 in
-  fut.status <- Binary { parents; edge1; edge2 }
+  fut.status <- Earliest { parents; edge1; edge2; decisive1; decisive2 }
 
 (* [new_ordinary_future_and_thread s resumption] creates a new ordinary
    future [fut] together with a new thread, initializes this thread's
@@ -603,8 +621,9 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
     fail "About to enqueue thread %d, but it is not active!\n%!"
       (thread_id thread)
   );
-  (* We expect this thread to be unblocked (not waiting). *)
-  assert (thread.awaits = None);
+  (* This thread must be unblocked. *)
+  assert (is_unblocked thread);
+  (* Insert this thread into the queue. *)
   if debug then
     info "Enqueuing thread %d." (thread_id thread);
   Queue.add thread s.queue
@@ -676,9 +695,9 @@ let[@inline] get_parents (fut : 'a future) : 'a parents =
       r.parents
   | Proxy r ->
       r.parents
-  | Unary r ->
+  | Join r ->
       r.parents
-  | Binary r ->
+  | Earliest r ->
       r.parents
 
 let[@inline] update_parents (fut : 'a future) (f : 'a parents -> 'a parents) =
@@ -697,12 +716,12 @@ let[@inline] update_parents (fut : 'a future) (f : 'a parents -> 'a parents) =
       let parents' = f parents in
       if parents' != parents then
         r.parents <- parents'
-  | Unary r ->
+  | Join r ->
       let parents = r.parents in
       let parents' = f parents in
       if parents' != parents then
         r.parents <- parents'
-  | Binary r ->
+  | Earliest r ->
       let parents = r.parents in
       let parents' = f parents in
       if parents' != parents then
@@ -788,9 +807,8 @@ fun s edge ->
   (* We expect [fut] to be unfulfilled. *)
   assert (
     is_unfulfilled fut ||
-    fail "About to activate edge %d -> %d, but child future is fulfilled already!"
-      (let UF parent = edge.parent in parent.id)
-      fut.id
+    fail "About to activate edge %s -> %d, but child future is fulfilled already!"
+      (show_edge_parent edge) fut.id
   );
   let was_active = is_active fut in
   (* Insert [edge] into [fut]'s active parent set. *)
@@ -818,16 +836,11 @@ fun s edge ->
         end
   | Proxy { edge; _ } ->
       activate_edge s edge
-  | Unary { edge; _ } ->
-      activate_untyped_edge s edge
-  | Binary { edge1; edge2; _ } ->
-      activate_untyped_edge s edge1;
-      activate_untyped_edge s edge2
-
-and activate_untyped_edge s edge =
-  match edge with
-  | UE edge ->
+  | Join { edge; _ } ->
       activate_edge s edge
+  | Earliest { edge1; edge2; _ } ->
+      activate_edge s edge1;
+      activate_edge s edge2
 
 (* [deactivate_edge edge] updates the DAG so as to reflect the fact that the
    edge [edge] has become inactive; that is, the source vertex of this edge
@@ -849,10 +862,9 @@ and activate_untyped_edge s edge =
 
 let rec deactivate_edge : 'a . 'a edge -> unit =
 fun edge ->
-  if debug then begin
-    let UF parent = edge.parent in
-    info "Removing the edge %d -> %d." parent.id edge.child.id
-  end;
+  if debug then
+    info "Removing the edge %s -> %d."
+      (show_edge_parent edge) edge.child.id;
   (* Examine this edge's child, a future. *)
   let fut = edge.child in
   (* Because [edge] was active, we expect [fut] to be active. *)
@@ -878,22 +890,63 @@ fun edge ->
         end
   | Proxy { edge; _ } ->
       deactivate_edge edge
-  | Unary { edge; _ } ->
-      deactivate_untyped_edge edge
-  | Binary { edge1; edge2; _ } ->
-      deactivate_untyped_edge edge1;
-      deactivate_untyped_edge edge2
-
-and deactivate_untyped_edge edge =
-  match edge with
-  | UE edge ->
+  | Join { edge; _ } ->
       deactivate_edge edge
+  | Earliest { edge1; edge2; _ } ->
+      deactivate_edge edge1;
+      deactivate_edge edge2
+
+(* [notify edge result] sends a notification up along the edge [edge]. The
+   parent is notified that the child has produced the result [result]. *)
+
+let rec notify : type a . a edge -> a -> unit =
+fun edge result ->
+  if debug then
+    info "Sending a notification up edge %s -> %d"
+      (show_edge_parent edge) edge.child.id;
+  assert (is_fulfilled edge.child);
+  (* TODO might wish to assert that parent status is consistent with [edge.notify] *)
+  match edge.notify with
+  | NRoot ->
+      ()
+  | NAwaken (thread, k) ->
+      let s = get_state() in (* TODO avoid *)
+      awaken s thread k result
+  | NProxy parent ->
+      fulfill parent result
+  | NJoin parent ->
+      let s = get_state() in (* TODO avoid *)
+      link s parent result
+  | NEarliest parent ->
+      let other, decisive =
+        match parent.status with
+        | Earliest { edge1; edge2; decisive1; decisive2; _ } ->
+            if edge == edge1 then edge2, decisive1
+            else edge1, decisive2
+        | _ ->
+            assert false
+      in
+      if decisive result then begin
+        (* This child has returned a decisive result. We do not need to wait
+           for the other child. Transmit the result to [parent] and deactivate
+           the edge that leads from the parent to its other child. *)
+        if debug then
+          info "Future %d is fulfilled and stops watching future %d."
+            parent.id other.child.id;
+        fulfill parent result;
+        deactivate_edge other
+      end
+      else
+        (* This child has returned a non-decisive result. We need to wait for
+           the other child. The parent future degenerates into a proxy future,
+           watching just the other child. *)
+        init_proxy_future parent other
 
 (* [notify_parents parents result] iterates on the (possibly empty) bag of
    edges [parents]. Every parent vertex is notified that the result of the
    child vertex is [result]. *)
 
-let notify_parents (parents : 'a edge option) (result : 'a) =
+and notify_parents (parents : 'a edge option) (result : 'a) : unit =
   match parents with
   | None ->
       ()
@@ -901,11 +954,7 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
       (* Iteration on a circular doubly-linked list. *)
       let sentinel = edge in
       let rec loop edge =
-        if debug then
-          info "Sending a notification up edge %d -> %d"
-            (let UF parent = edge.parent in parent.id)
-            edge.child.id;
-        edge.notify result;
+        notify edge result;
         let next = edge.next in
         if next != sentinel then loop next
       in
@@ -916,7 +965,8 @@ let notify_parents (parents : 'a edge option) (result : 'a) =
 
 (* [fut] must not be fulfilled already. *)
 
-let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
+and fulfill : 'a . 'a future -> 'a -> unit =
+fun fut result ->
   assert (
     is_unfulfilled fut ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
@@ -931,14 +981,15 @@ let[@inline] fulfill (fut : 'a future) (result : 'a) : unit =
    which has an existing outgoing edge [edge], into a proxy future
    with the same outgoing edge. *)
 
-let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
+and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
+fun fut edge ->
   assert (is_unfulfilled fut);
   assert (is_unfulfilled edge.child);
   if debug then
     info "Future %d becomes a proxy future, watching future %d."
       fut.id edge.child.id;
   let parents = get_parents fut in
-  edge.notify <- fulfill fut;
+  edge.notify <- NProxy fut;
   fut.status <- Proxy { parents; edge }
 
 (* [link s fut1 fut2] transforms [fut1] into a proxy for [fut2]. *)
@@ -953,14 +1004,15 @@ let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
 (* The caller must hold the unique permission to fulfill [fut1].
    This permission is consumed. *)
 
-let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
+and link : type a . state -> a future -> a future -> unit =
+fun s fut1 fut2 ->
   assert (is_unfulfilled fut1);
   assert (is_active fut1);
   match query fut2 with
   | Result result ->
       fulfill fut1 result
   | Future fut2 ->
-      let edge = new_edge (UF fut1) fut2 in
+      let edge = new_edge fut2 in
       init_proxy_future fut1 edge;
       activate_edge s edge
 
@@ -975,7 +1027,7 @@ let link (s : state) (fut1 : 'a future) (fut2 : 'a future) =
 
 (* [handle_termination s ()] handles the termination of the current thread. *)
 
-let handle_termination s () : unit =
+and handle_termination s () : unit =
   (* The current thread has terminated. There may remain some threads
      in the queue, whose results are not needed by this thread. *)
   let thread = s.current in
@@ -992,15 +1044,15 @@ let handle_termination s () : unit =
 (* [active] determines whether the thread [thread] is currently active,
    that is, reachable from the root future. *)
 
-let rec block : state -> bool -> thread -> 'a future -> 'a cont -> unit
+and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
 = fun s active thread fut k ->
   assert (is_unfulfilled fut);
   assert (active = thread_is_active thread);
   (* Create a new edge from [thread] to [fut], so that,
      once [fut] is fulfilled, [thread] is awoken and
      applies [k] to the result of [fut]. *)
-  let edge = new_edge thread.fulfills fut in
-  edge.notify <- awaken s thread k;
+  let edge = new_edge fut in
+  edge.notify <- NAwaken (thread, k);
   thread.awaits <- Some (UE edge);
   (* If [thread] is currently active, activate this edge.
      This adds one active parent to [fut]. *)
@@ -1151,9 +1203,8 @@ let run (type w) (main : w task) : w =
     unit_resumption s (fiber main)
   in
   (* Create an edge whose child is the root future. *)
-  let notify _ = () in
-  let edge = new_edge (UF dummy_future) fut in
-  edge.notify <- notify;
+  let edge = new_edge fut in
+  edge.notify <- NRoot;
   (* Activate this edge. This activates the root future
      and schedules the main thread for execution. *)
   activate_edge s edge;
@@ -1297,12 +1348,6 @@ let _join (fut : 'a future future) : 'a future =
    produces a result [result], which itself is a future, we change [join]
    into a proxy future for [result]. *)
 
-let notify_join (join : 'a future) (result : 'a future) =
-  (* The future [fut] has returned [result], which itself is a future.
-     Change [join], in place, into a proxy future for [result].*)
-  let s = get_state() in
-  link s join result
-
 let join (fut : 'a future future) : 'a future =
   match query fut with
   | Result result ->
@@ -1310,9 +1355,9 @@ let join (fut : 'a future future) : 'a future =
   | Future fut ->
       (* Create a fresh unary future [join], watching [fut]. *)
       let join = new_future "join" in
-      let edge = new_edge (UF join) fut in
-      edge.notify <- notify_join join;
-      init_unary_future fut edge;
+      let edge = new_edge fut in
+      edge.notify <- NJoin join;
+      init_join_future join edge;
       join
 
 (* A simple implementation of [bind] using [map] and [join]. *)
@@ -1338,69 +1383,7 @@ let _bind (fut : 'a future) (f : 'a -> 'b future) : 'b future =
 
 (* -------------------------------------------------------------------------- *)
 
-(* [earliest] *)
-
-(* [notify_earliest fut edge2 result1] is invoked when [fut1] has returned
-   [result1]. We do not need to wait for [fut2]. We transmit [result1] to
-   [fut] and deactivate the edge that leads from [fut] to [fut2]. *)
-
-let[@inline] notify_earliest fut edge2 result1 =
-  if debug then
-    info "Future %d is fulfilled and stops watching future %d."
-      fut.id edge2.child.id;
-  fulfill fut result1;
-  deactivate_edge edge2
-
-(* A race between two distinct, unfulfilled futures. *)
-
-let raw_earliest (fut1 : 'a future) (fut2 : 'a future) : 'a future =
-  assert (is_unfulfilled fut1);
-  assert (is_unfulfilled fut2);
-  assert (fut1 != fut2);
-  let fut = new_future "earliest" in
-  let edge1 = new_edge (UF fut) fut1
-  and edge2 = new_edge (UF fut) fut2 in
-  if debug then
-    info "Future %d watches futures %d and %d."
-      fut.id fut1.id fut2.id;
-  edge1.notify <- notify_earliest fut edge2;
-  edge2.notify <- notify_earliest fut edge1;
-  init_binary_future fut edge1 edge2;
-  fut
-
-(* A race between two tasks. *)
-
-let[@inline] earliest (task1 : 'a task) (task2 : 'a task) : 'a =
-  raw_earliest (spawn task1) (spawn task2)
-  |> wait
-
-(* A race between two arbitrary futures. *)
-
-let earliest_fut (fut1 : 'a future) (fut2 : 'a future) : 'a future =
-  match query fut1, query fut2 with
-  | Result _, _ ->
-      fut1
-  | _, Result _ ->
-      fut2
-  | Future fut1, Future fut2 ->
-      if fut1 == fut2 then fut1 else
-      raw_earliest fut1 fut2
-
-(* -------------------------------------------------------------------------- *)
-
 (* [earliest_decisive] *)
-
-let notify_earliest_decisive decisive1 fut edge2 result1 =
-  if decisive1 result1 then
-    (* [fut1] has returned a decisive result. We do not need to wait for
-       [fut2]. Transmit the result to [fut] and deactivate the edge that
-       leads from [fut] to [fut2]. *)
-    notify_earliest fut edge2 result1
-  else
-    (* [fut1] has returned a non-decisive result. We need to wait for
-       [fut2]. The binary future [fut] degenerates into a proxy future,
-       watching just [fut2]. *)
-    init_proxy_future fut edge2
 
 (* A race between two distinct, unfulfilled futures. *)
 
@@ -1409,14 +1392,14 @@ let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
   assert (is_unfulfilled fut2);
   assert (fut1 != fut2);
   let fut = new_future "earliest_decisive" in
-  let edge1 = new_edge (UF fut) fut1
-  and edge2 = new_edge (UF fut) fut2 in
+  let edge1 = new_edge fut1
+  and edge2 = new_edge fut2 in
   if debug then
     info "Future %d watches futures %d and %d."
       fut.id fut1.id fut2.id;
-  edge1.notify <- notify_earliest_decisive decisive1 fut edge2;
-  edge2.notify <- notify_earliest_decisive decisive2 fut edge1;
-  init_binary_future fut edge1 edge2;
+  edge1.notify <- NEarliest fut;
+  edge2.notify <- NEarliest fut;
+  init_earliest_future fut edge1 edge2 decisive1 decisive2;
   fut
 
 (* A race between two tasks. *)
@@ -1436,6 +1419,19 @@ let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
   | Future fut1, Future fut2 ->
       if fut1 == fut2 then fut1 else
       raw_earliest_decisive decisive1 decisive2 fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
+(* [earliest] *)
+
+let always _ =
+  true
+
+let[@inline] earliest task1 task2 =
+  earliest_decisive always always task1 task2
+
+let[@inline] earliest_fut fut1 fut2 =
+  earliest_decisive_fut always always fut1 fut2
 
 (* -------------------------------------------------------------------------- *)
 
