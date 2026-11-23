@@ -148,6 +148,13 @@ type thread = {
        This future can be viewed as the child of this thread in the
        dependency graph. *)
 
+  mutable enqueued   : bool;
+    (**Whether this thread is currently physically present in the queue. When
+       a thread becomes inactive, it is logically removed from the queue, but
+       remains physically present in the queue. This flag lets us test whether
+       a thread is physically in the queue. Thus we avoid enqueuing a thread
+       twice. *)
+
 }
 
 and 'a edge = {
@@ -308,8 +315,9 @@ let dummy_future : 'a future =
 let dummy_thread : thread =
   let resumption = dummy_resumption
   and fulfills = UF dummy_future
-  and awaits = None in
-  { resumption; fulfills; awaits }
+  and awaits = None
+  and enqueued = false in
+  { resumption; fulfills; awaits; enqueued }
 
 (* -------------------------------------------------------------------------- *)
 
@@ -535,7 +543,7 @@ let rec query (fut : 'a future) : 'a reply =
 let[@inline] thread_is_active thread =
   match thread.fulfills with
   | UF fut ->
-      assert (is_ordinary fut); (* TODO fails at test #5112 *)
+      assert (is_ordinary fut);
       is_active fut
 
 let[@inline] thread_is_inactive thread =
@@ -559,8 +567,9 @@ let[@inline] is_unblocked thread =
 
 let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
   let fulfills = UF fut
-  and awaits = None in
-  let thread = { resumption; fulfills; awaits } in
+  and awaits = None
+  and enqueued = false in
+  let thread = { resumption; fulfills; awaits; enqueued } in
   if debug then
     info "Creating thread %d." (thread_id thread);
   thread
@@ -654,7 +663,12 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
   (* Insert this thread into the queue. *)
   if debug then
     info "Enqueuing thread %d." (thread_id thread);
-  Queue.add thread s.queue
+  (* If this thread is already physically present in the queue, do nothing;
+     otherwise enqueue it. *)
+  if not thread.enqueued then begin
+    thread.enqueued <- true;
+    Queue.add thread s.queue
+  end
 
 (* [dequeue s] extracts a thread from the queue, if there is one, and
    executes its resumption. As noted above, this runs the scheduler until
@@ -672,6 +686,8 @@ let rec dequeue (s : state) : unit =
   | exception Queue.Empty ->
       ()
   | thread ->
+      assert (thread.enqueued);
+      thread.enqueued <- false;
       (* If this thread is inactive or blocked, ignore it. *)
       if thread_is_inactive thread || is_blocked thread then
         dequeue s
