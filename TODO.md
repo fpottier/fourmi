@@ -2,8 +2,20 @@
 
 ## Code
 
-* Is it OK to let a continuation be reclaimed by the GC
-  without explicitly discontinuing it?
+* In the `cleanup` functions and related functions,
+  can we remove the parameter `s`?
+  It could be stored in `NAwaken`,
+  costing some memory,
+  but removing the need to perform an effect.
+  Or should we make it lazy, so we perform an effect *at most once*
+  to obtain it?
+
+* It is currently *not* OK to let a continuation be reclaimed by the GC
+  without explicitly discontinuing it.
+  + Wait for a future version of OCaml where this is permitted?
+    If so, document the fact that user threads should not hold
+    system resources, or these resources might be lost.
+  + Or, keep a list of all threads and perform manual collection.
 
 * Could we get rid of the `State` effect?
 
@@ -17,7 +29,9 @@
 
 * Offer an operator that waits for one of / all of an array of futures to finish?
   That would be more efficient than a sequence of calls to `wait`
-  or nested calls to `select`.
+  or nested calls to `earliest`.
+  The difficulty with an array is what to do once one child becomes
+  done (but is not decisive).
 
 * Support cancellation. Allow a user task to throw an exception,
   record it in the future, throw it again when someone waits on
@@ -31,9 +45,6 @@
   its own effect names and/or
   its own abstract type of futures?
 
-* Perhaps prefer to remove a thread from the queue when it becomes
-  inactive or blocked; this would be cleaner (though slower?).
-
 ## Testing
 
 * Test with variables of type future, so we get a DAG.
@@ -46,7 +57,7 @@
 ## Release
 
 * Before releasing, use `cppo` to get rid of the debugging support fields
-  `fut.id` and `edge.parent`.
+  `fut.id` and `edge.active`.
 
 ## Related Work
 
@@ -73,7 +84,7 @@
 * In the type `thread`, the field `awaits` has type `untyped_edge option`.
   One could remove the option by using a pointer to a sentinel value.
 
-* Defining `conjunction` and `disjunction` in terms of `earliest_decisive`
-  costs two words of memory in each edge of the binary future, because the
-  functions `decisive1` and `decisive2` are stored in memory. One could avoid
-  this by duplicating and specializing the code.
+* Defining `earliest`, `conjunction`, and `disjunction` in terms of
+  `earliest_decisive` costs two words of memory in each edge of the binary
+  future, because the functions `decisive1` and `decisive2` are stored in
+  memory. One could avoid this by duplicating and specializing the code.
