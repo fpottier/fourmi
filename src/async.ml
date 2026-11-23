@@ -1,6 +1,7 @@
 open Printf
 open Effect
 open Effect.Shallow
+type mark = Mark.t
 
 (* -------------------------------------------------------------------------- *)
 
@@ -239,6 +240,9 @@ and 'a future = {
   mutable status     : 'a status;
     (**The current status of this future. *)
 
+  mutable mark       : mark;
+    (**A transient mark, for use during certain DAG traversals. *)
+
 }
 
 (* [untyped_future] is the existential type [∃'a. 'a future]. It is a future
@@ -324,10 +328,14 @@ and 'a parents =
 let dummy_resumption : 'a resumption =
   Resumption (fun () -> assert false)
 
+let dummy_mark =
+  Mark.fresh()
+
 let dummy_future : 'a future =
   let id = -1
-  and status = Uninitialized in
-  { id; status }
+  and status = Uninitialized
+  and mark = dummy_mark in
+  { id; status; mark }
 
 let dummy_thread : thread =
   let resumption = dummy_resumption
@@ -524,6 +532,9 @@ let is_active (fut : 'a future) : bool =
   | Earliest { parents; _ }
       -> Option.is_some parents
 
+let[@inline] is_inactive fut =
+  not (is_active fut)
+
 (* If the result of the future [fut] is available then [query fut] returns
    this result. Otherwise [query fut] returns [fut] or an equivalent future,
    obtained from [fut] by following a chain of [Proxy] links. *)
@@ -614,10 +625,11 @@ let next_future_id =
 let new_future (kind : string) : 'a future =
   let id = !next_future_id in
   next_future_id := id + 1;
-  let status = Uninitialized in
+  let status = Uninitialized
+  and mark = dummy_mark in
   if debug then
     info "Creating %s future %d." kind id;
-  { id; status }
+  { id; status; mark }
 
 let[@inline] init_ordinary_future (fut : 'a future) (thread : thread) =
   let parents = None in
@@ -832,8 +844,127 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
 
 (* -------------------------------------------------------------------------- *)
 
-(* Operations on edges. *)
+(* Activation. *)
 
+(* Activation begins when the client expresses interest in a future [fut]
+   which, so far, was inactive. For example, perhaps the client invokes
+   [wait fut]. *)
+
+(* Activation is subtler than it seems. One might think that activation
+   requires traversing the graph, starting at [fut], following inactive
+   edges only, and activating every such edge along the way. However, this
+   understanding is too naive, and can lead to activating futures that
+   should not be activated. Indeed, recall that if a future F is inactive
+   then an edge F → F' can lead to a future F' that is fulfilled already.
+   In such a case, the future F should be updated, and (if F has more than
+   one child) this can cause F to stop watching its other child F''. Thus
+   F'' must not be activated. *)
+
+(* To address this problem, we perform activation in two stages:
+
+   1- The cleanup stage traverses the inactive area of the DAG and (on the
+      way back up) updates the status of each future based on the statuses
+      of its children. This can cause inactive edges to disappear.
+
+   2- The activation stage traverses the inactive area of the DAG
+      and (on the way down) activates every inactive edge along the way.
+
+   In the cleanup stage, to avoid visiting a vertex more than once,
+   we use the transient field [mark].
+
+   In the activation stage, an edge is traversed only after its inactive
+   parent becomes active. Therefore an edge is traversed at most once. *)
+
+let rec cleanup_future : 'a . state -> mark -> 'a future -> unit =
+fun s visited fut ->
+  assert (is_initialized fut);
+  assert (is_inactive fut);
+  if not (Mark.same fut.mark visited) then begin
+    fut.mark <- visited;
+    cleanup_unvisited_future s visited fut
+  end
+
+and cleanup_unvisited_future : 'a . state -> mark -> 'a future -> unit =
+fun s visited fut ->
+  assert (is_initialized fut);
+  assert (is_inactive fut);
+  if debug then info "Cleaning up future %d." fut.id;
+  match fut.status with
+  | Uninitialized
+  | Done _ ->
+      ()
+
+  | Ordinary { thread; _ } ->
+      (* If the child future has become fulfilled then [cleanup_edge]
+         unblocks this thread. However, this thread is not active yet,
+         as we are only in the first stage of the activation process;
+         so the thread is not inserted into the queue. *)
+      assert (thread_is_inactive thread);
+      cleanup_optional_untyped_edge s visited thread.awaits
+
+  | Proxy { edge; _ } ->
+      (* If the child future has become fulfilled then [cleanup_edge]
+          fulfills this future. *)
+      cleanup_edge s visited edge
+
+  | Join { edge; _ } ->
+      (* If the child future has become fulfilled then [cleanup_edge]
+         invokes [link] on this future, causing this future to either
+         become fulfilled or become changed into a proxy future. *)
+      cleanup_edge s visited edge
+
+  | Earliest { edge1; edge2; decisive1; decisive2; _ } ->
+      (* We do not want to use two calls to [cleanup_edge] because
+         the case where the two children are fulfilled would not be
+         properly handled. So, we first clean up the two children,
+         then update the status of the parent. *)
+      let child1 = edge1.child in
+      cleanup_future s visited child1;
+      let child2 = edge2.child in
+      cleanup_future s visited child2;
+      match child1.status, child2.status with
+      | Done { result = result1 }, Done { result = result2 } ->
+          if decisive1 result1 then
+            (* [edge2] is lost, and was inactive, so there is no need to
+               call [deactivate_edge]. *)
+            fulfill s fut result1
+          else
+            (* No need to test whether [result2] is decisive. *)
+            fulfill s fut result2
+      | Done { result = result1 }, _ ->
+          if decisive1 result1 then
+            fulfill s fut result1
+          else
+            init_proxy_future fut edge2
+      | _, Done { result = result2 } ->
+          if decisive2 result2 then
+            fulfill s fut result2
+          else
+            init_proxy_future fut edge1
+      | _, _ ->
+          ()
+
+and cleanup_edge : 'a . state -> mark -> 'a edge -> unit =
+fun s visited edge ->
+  cleanup_future s visited edge.child;
+  (* If the child future has become fulfilled,
+     then send a notification up this edge. *)
+  match edge.child.status with
+  | Done { result } ->
+      notify s edge result
+  | _ ->
+      ()
+
+and cleanup_optional_untyped_edge :
+  'a . state -> mark -> untyped_edge option -> unit =
+fun s visited edge ->
+  match edge with
+  | None ->
+      ()
+  | Some (UE edge) ->
+      cleanup_edge s visited edge
+
+(* TODO update comments *)
 (* [activate_edge s edge] updates the DAG so as to reflect the fact that the
    source vertex of the edge [edge] has become newly active. This requires
    1- inserting [edge] into the active parent bag of the future [edge.child];
@@ -844,21 +975,9 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
       b- recursively activating this thread's outgoing edges,
          otherwise. *)
 
-(* [activate_edge] performs a DAG traversal. An edge is traversed only when
-   the number of active parents of its source vertex changes from 0 to 1.
-   Therefore an edge is traversed at most once. *)
+(* In the activation stage, one can expect the future [edge.child] to be unfulfilled. *)
 
-(* One might expect the future [edge.child] to be unfulfilled. Indeed, once
-   a future is fulfilled, its active parents are notified and the edges that
-   point down to this future disappear. However, if the parent was inactive
-   when the child future was resolved, then the edge did not exist at that
-   time (it was not a member of the child's list of active parents), so the
-   parent was not notified. *)
-
-(* TODO decide what to do when a future has one (or more!) fulfilled children
-   at the moment when this future is activated again. *)
-
-let rec activate_edge : 'a . state -> 'a edge -> unit =
+and activate_edge : 'a . state -> 'a edge -> unit =
 fun s edge ->
   (* Because [edge.parent] was inactive until now,
      this edge must be isolated. *)
@@ -903,6 +1022,10 @@ fun s edge ->
       activate_edge s edge1;
       activate_edge s edge2
 
+(* -------------------------------------------------------------------------- *)
+
+(* Deactivation. *)
+
 (* [deactivate_edge edge] updates the DAG so as to reflect the fact that the
    edge [edge] has become inactive; that is, the source vertex of this edge
    no longer watches the target vertex. This requires
@@ -921,7 +1044,7 @@ fun s edge ->
 (* Due to possible aliasing between the children of a binary future, it may
    be the case that [edge.child] is fulfilled already. *)
 
-let rec deactivate_edge : 'a . 'a edge -> unit =
+and deactivate_edge : 'a . 'a edge -> unit =
 fun edge ->
   if debug then
     info "Removing the edge %s -> %d."
@@ -965,7 +1088,7 @@ fun edge ->
    The parent is notified that the child has produced the result [result].
    The parent must be active. *)
 
-let rec notify : type a . state -> a edge -> a -> unit =
+and notify : type a . state -> a edge -> a -> unit =
 fun s edge result ->
   if debug then
     info "Sending a notification up edge %s -> %d"
@@ -975,14 +1098,11 @@ fun s edge result ->
   | NRoot ->
       ()
   | NAwaken (thread, k) ->
-      assert (thread_is_active thread);
       awaken s thread k result
   | NProxy parent ->
-      assert (is_active parent);
       assert (is_proxy parent);
       fulfill s parent result
   | NJoin parent ->
-      assert (is_active parent);
       assert (is_join parent);
       link s parent result
   | NEarliest parent ->
@@ -996,6 +1116,7 @@ fun s edge result ->
         | _ ->
             assert false
       in
+      assert (is_unfulfilled other.child);
       if decisive result then begin
         (* This child has returned a decisive result. We do not need to wait
            for the other child. Transmit the result to [parent] and deactivate
@@ -1130,25 +1251,20 @@ and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
     activate_edge s edge
   (* [thread] is blocked but remains possibly active. *)
 
-(* [awaken s thread k result] inserts the thread [thread] into the queue,
-   in charge of running continuation [k] applied to result [result]. *)
-
-(* The partial application [awaken s thread k] is typically used as a
-   [notify] function that is installed on an edge. *)
+(* [awaken s thread k result] awakens the thread [thread], in charge of
+   running continuation [k] applied to result [result]. This thread must
+   be currently blocked. It is not necessarily currently active. If it is
+   active then it is inserted into the queue. *)
+(* TODO do we correctly maintain the invariant that every active unblocked
+   thread is in the queue? *)
 
 and awaken : 'a . state -> thread -> 'a cont -> 'a -> unit =
 fun s thread k result ->
-  (* This thread must be active. *)
-  assert (
-    thread_is_active thread ||
-    fail "About to awaken thread %d, but it is not active!\n%!"
-      (thread_id thread)
-  );
-  (* This thread must be blocked. *)
   assert (is_blocked thread);
   thread.resumption <- resumption s k result;
   thread.awaits <- None;
-  enqueue s thread
+  if thread_is_active thread then
+    enqueue s thread
 
 (* [handle_wait s fut k] handles a request by the current thread to
    wait for the future [fut]. [k] is the continuation of the current
