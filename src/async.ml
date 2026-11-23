@@ -957,9 +957,13 @@ fun edge ->
       deactivate_edge edge1;
       deactivate_edge edge2
 
-(* [notify edge result] sends a notification up along the edge [edge]. The
-   parent is notified that the child has produced the result [result]. The
-   parent must be active. *)
+(* -------------------------------------------------------------------------- *)
+
+(* Notifications. *)
+
+(* [notify s edge result] sends a notification up along the edge [edge].
+   The parent is notified that the child has produced the result [result].
+   The parent must be active. *)
 
 let rec notify : type a . state -> a edge -> a -> unit =
 fun s edge result ->
@@ -967,10 +971,8 @@ fun s edge result ->
     info "Sending a notification up edge %s -> %d"
       (show_edge_parent edge) edge.child.id;
   assert (is_fulfilled edge.child);
-  (* TODO might wish to assert that parent status is consistent with [edge.notify] *)
   match edge.notify with
   | NRoot ->
-      (* The child is the root future. There is no parent. *)
       ()
   | NAwaken (thread, k) ->
       assert (thread_is_active thread);
@@ -1503,7 +1505,7 @@ let[@inline] earliest_fut fut1 fut2 =
 
 (* -------------------------------------------------------------------------- *)
 
-(* Conjunction and disjunction. *)
+(* [conjunction]. *)
 
 let is_false b =
   not b
@@ -1514,10 +1516,12 @@ let[@inline] conjunction task1 task2 =
 let[@inline] conjunction_fut fut1 fut2 =
   earliest_decisive_fut is_false is_false fut1 fut2
 
+(* -------------------------------------------------------------------------- *)
+
+(* [disjunction] *)
+
 let is_true b =
   b
-
-(* Disjunction. *)
 
 let[@inline] disjunction task1 task2 =
   earliest_decisive is_true is_true task1 task2
