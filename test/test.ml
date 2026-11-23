@@ -272,10 +272,10 @@ let test budget =
 (* The main program. *)
 
 let iterations =
-  10000
+  20000
 
 let budget =
-  1000
+  3000
 
 let debug =
   true
