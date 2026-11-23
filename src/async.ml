@@ -41,30 +41,33 @@ type 'a cont =
    but will become available once it has been computed. It can be viewed
    roughly as a reference that contains either nothing yet or a result.
 
-   A thread is a computation whose ultimate aim is to fulfill one future. *)
+   A thread is a computation whose ultimate aim is to fulfill one future.
+   Every thread aims to fulfill a future. A future that is meant to be
+   fulfilled by a thread is ordinary. Not every future is ordinary. *)
 
-(* The main thread is created by [run]. Every other thread is created by
-   [spawn]. In either case, when a thread is created, a future is created at
-   the same time, and this thread is in charge of fulfilling this future.
+(* The main thread and the root future are created by the public function
+   [run]. Auxiliary threads are created by the public functions [spawn],
+   [spawn_wait], [map], [bind]. When a thread is created, a new ordinary
+   future is created as well, and this thread is in charge of fulfilling this
+   future. *)
 
-   A future created by [run] or [spawn] is an ordinary future.
-
-   The future created by [run] is the root future. The main thread is in
-   charge of fulfilling this future. It is an ordinary future. *)
-
-(* A proxy future, a join future, or an earliest future does not have a
-   corresponding thread. A proxy future watches one future and adopts its
-   result. A join future watches one future and transforms itself into a proxy
-   for its result. An earliest future watches two futures and either adopts
-   the first result that is produced or transforms itself into a proxy for its
-   remaining child. *)
+(* Besides ordinary futures, we have proxy futures, join futures, and earliest
+   futures. These futures do not have a corresponding thread.
+   1- A proxy future watches one future
+      and adopts its result.
+   2- A join future watches one future
+      and transforms itself into a proxy for its result.
+   3- An earliest future watches two futures and
+      either adopts the result of the child that terminates first
+      or transforms itself into a proxy for the remaining child. *)
 
 (* Futures and threads form a dependency graph, whose edges evolve over time:
    1- An ordinary future depends on the thread that will fulfill this future.
    2- A thread that is currently waiting for a future to be fulfilled
       currently depends on this future.
    3- A proxy future depends on one other future.
-   4- A binary future depends on two other futures. *)
+   4- A join future depends on one other future.
+   5- An earliest future depends on two other futures. *)
 
 (* The dependency graph is acyclic: it is a DAG. If the client uses mutable
    state in a strange way, then the dependency graph can become cyclic, but
@@ -73,7 +76,7 @@ type 'a cont =
 (* In the dependency graph, a thread has exactly one parent and at most one
    child. In order to simplify our view of the graph, we do not view threads
    as vertices in the dependency graph; only futures are vertices.
-   Therefore, items 1- and 2- can be summed up as follows:
+   Therefore, items 1- and 2- above can be summed up as follows:
    1- If an ordinary future F is meant to be fulfilled by thread T,
       and if thread T is currently waiting on future F',
       then F currently depends on F'. *)
@@ -81,9 +84,10 @@ type 'a cont =
 (* A future is currently active if and only if it is currently reachable from
    the root future via a path in the dependency graph. *)
 
-(* A thread is said to be ready if it is either currently running or present
-   in the scheduler's queue. A thread is said to be suspended if it is not
-   ready, that is, neither running nor present in the queue. *)
+(* A thread is said to be ready if it is either currently running or logically
+   present in the scheduler's queue. A thread is said to be suspended if it is
+   not ready, that is, neither running nor present in the queue. A thread is
+   said to be blocked if it is currently waiting on a future. *)
 
 (* Suppose that an ordinary future F is meant to be fulfilled by thread T.
    Then T is ready if and only if T awaits nothing **and F is active**.
@@ -95,15 +99,18 @@ type 'a cont =
    away; it is kept at hand, and is scheduled again when it becomes reachable
    again. *)
 
-(* Every future F' stores the number of its active parents, that is,
-   the number of futures F such that F depends on F' and F is active.
+(* Every future F' stores a bag of its active parents. By this, we mean a bag
+   of active incoming edges. These are the edges F → F' such that F watches F'
+   and F is active. This bag is represented as a possibly empty, circular
+   doubly-linked list of edges, so an edge can be added or removed in constant
+   time.
 
-   A future is active if and only if the number of its active parents
-   is nonzero. *)
+   A future is active if and only if its bag of active parents is nonempty.
+   The root future is equipped with a dummy incoming edge, so it is always
+   active. *)
 
-(* When a future is fulfilled, its active parents (which await its result)
-   must be notified. Therefore, every future must maintain a bag of edges
-   that point up towards its active parents.
+(* When a future is fulfilled, its active parents are notified. This is made
+   possible by the bag of edges that point up to the active parents.
 
    The inactive parents must not appear in this bag, because 1- we do not
    wish to waste time notifying an inactive parent, and more importantly,
@@ -111,17 +118,27 @@ type 'a cont =
    has become unreachable.
 
    Therefore, when a parent becomes inactive, it must be removed from its
-   children's bags of active parents.
+   children's bags of active parents. *)
 
-   We set things up as follows. Between an active parent and a child, there
-   is an edge object. The parent and child point to the edge, which points
-   back to the parent and child. The child's bag of active parents is in
-   fact a circular doubly-linked list of edges, so an edge can be added or
-   removed in constant time. *)
+(* In summary, we maintain a DAG where the vertices are objects of type
+   ['a future] and the edges are objects of type ['a edge]. Within this
+   graph, two areas must be carefully distinguished, namely the active
+   vertices versus the inactive vertices.
 
-(* TODO explain more clearly that we maintain down edges everywhere
-   but we maintain up edges only in the active (reachable) part of
-   the graph  *)
+   1- Every vertex carries pointers to its outgoing edges,
+      which point to its children.
+   2- Every vertex carries pointers to its active incoming edges,
+      which point to its active parents.
+
+   In other words, the downward links, from a vertex to its children,
+   exist everywhere, whereas the upwards links, from a child to its
+   parents, exist only in the active area of the graph.
+
+   The active area and on the inactive area enjoy different invariants. In the
+   active area, a stronger invariant is imposed, namely: if an edge F → F' is
+   active, then F' is not fulfilled. (Indeed, once F' becomes fulfilled, then,
+   because this edge is active, F is notified and updates its status.) In the
+   inactive area, this property is not true. *)
 
 type thread = {
 
