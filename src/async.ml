@@ -586,6 +586,25 @@ let[@inline] is_blocked thread =
 let[@inline] is_unblocked thread =
   not (is_blocked thread)
 
+(* [edge_is_active] is used only for debugging. *)
+
+let edge_is_active : type a . a edge -> bool =
+fun edge ->
+  match edge.notify with
+  | NRoot ->
+      true
+  | NAwaken (thread, _k) ->
+      thread_is_active thread
+  | NProxy parent ->
+      is_active parent
+  | NJoin parent ->
+      is_active parent
+  | NEarliest parent ->
+      is_active parent
+
+let edge_is_inactive edge =
+  not (edge_is_active edge)
+
 (* -------------------------------------------------------------------------- *)
 
 (* Creating new threads, edges, and futures. *)
@@ -870,16 +889,21 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
       and (on the way down) activates every inactive edge along the way.
 
    In the cleanup stage, to avoid visiting a vertex more than once,
-   we use the transient field [mark].
+   we use the transient field [mark]. The mark [visited] is used to
+   mark the vertices that have been visited during this traversal.
 
    In the activation stage, an edge is traversed only after its inactive
    parent becomes active. Therefore an edge is traversed at most once. *)
 
+(* The cleanup stage. *)
+
 let rec cleanup_future : 'a . state -> mark -> 'a future -> unit =
 fun s visited fut ->
   assert (is_initialized fut);
-  assert (is_inactive fut);
-  if not (Mark.same fut.mark visited) then begin
+  (* An inactive parent can have an active child, so this future
+     may be active. If it is active, ignore it. If it is inactive,
+     and if it has not yet been visited, then mark it and visit it. *)
+  if is_inactive fut && not (Mark.same fut.mark visited) then begin
     fut.mark <- visited;
     cleanup_unvisited_future s visited fut
   end
@@ -889,7 +913,15 @@ fun s visited fut ->
   assert (is_initialized fut);
   assert (is_inactive fut);
   if debug then info "Cleaning up future %d." fut.id;
+
+  (* Examine [fut]'s status. In the cases of ordinary futures, proxy futures,
+     and join futures, we call [cleanup_edge], which calls [cleanup_future]
+     possibly followed with [notify]. This avoids code duplication. In the
+     case of join futures, attempting to use [notify] would be awkward, as
+     this function is designed to deal with a situation where at most one
+     child is fulfilled. Thus, we write ad hoc code to handle this case. *)
   match fut.status with
+
   | Uninitialized
   | Done _ ->
       ()
@@ -955,16 +987,15 @@ fun s visited edge ->
   | _ ->
       ()
 
-and cleanup_optional_untyped_edge :
-  'a . state -> mark -> untyped_edge option -> unit =
-fun s visited edge ->
+and cleanup_optional_untyped_edge s visited edge =
   match edge with
   | None ->
       ()
   | Some (UE edge) ->
       cleanup_edge s visited edge
 
-(* TODO update comments *)
+(* The activation stage. *)
+
 (* [activate_edge s edge] updates the DAG so as to reflect the fact that the
    source vertex of the edge [edge] has become newly active. This requires
    1- inserting [edge] into the active parent bag of the future [edge.child];
@@ -975,10 +1006,11 @@ fun s visited edge ->
       b- recursively activating this thread's outgoing edges,
          otherwise. *)
 
-(* In the activation stage, one can expect the future [edge.child] to be unfulfilled. *)
+(* We expect the future [edge.child] to be unfulfilled. *)
 
 and activate_edge : 'a . state -> 'a edge -> unit =
 fun s edge ->
+  assert (edge_is_inactive edge);
   (* Because [edge.parent] was inactive until now,
      this edge must be isolated. *)
   assert (edge.prev == edge && edge.next == edge);
@@ -1085,13 +1117,21 @@ fun edge ->
 (* Notifications. *)
 
 (* [notify s edge result] sends a notification up along the edge [edge].
-   The parent is notified that the child has produced the result [result].
-   The parent must be active. *)
+   The parent is notified that the child has produced the result [result]. *)
+
+(* [notify] is called on two different occasions:
+   - It can be invoked when [edge] is active,
+     that is, when both the parent and child futures are active,
+     and the future [edge.child] has just been fulfilled.
+   - It can be invoked during the cleanup stage;
+     then [edge] is inactive and is possibly (but not certainly)
+     about to be activated. *)
 
 and notify : type a . state -> a edge -> a -> unit =
 fun s edge result ->
   if debug then
-    info "Sending a notification up edge %s -> %d"
+    info "Sending a notification up the %s edge %s -> %d"
+      (if edge_is_active edge then "active" else "inactive")
       (show_edge_parent edge) edge.child.id;
   assert (is_fulfilled edge.child);
   match edge.notify with
