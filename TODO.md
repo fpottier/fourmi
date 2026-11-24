@@ -16,6 +16,7 @@
     If so, document the fact that user threads should not hold
     system resources, or these resources might be lost.
   + Or, keep a list of all threads and perform manual collection.
+  + Or, install a finalizer on each thread.
 
 * Could we get rid of the `State` effect?
 
@@ -45,6 +46,18 @@
   its own effect names and/or
   its own abstract type of futures?
 
+* Consider building a form of granularity control inside `yield`.
+  A call to `yield` really yields only one out of `K` times.
+  One counter per thread.
+
+* Expose `cleanup_and_query` in the public API.
+
+## Documentation
+
+* Document whether it is necessary to call `yield`
+  as opposed to just `spawn` and `wait`.
+  Maybe `spawn` and `wait` should implicitly yield.
+
 ## Testing
 
 * Test with variables of type future, so we get a DAG.
@@ -53,6 +66,8 @@
 
 * Can we test that a thread whose future is unreachable is reclaimed
   by the GC?
+
+* Benchmark; measure the overhead compared with sequential execution.
 
 ## Release
 
