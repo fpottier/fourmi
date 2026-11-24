@@ -35,6 +35,7 @@ type 'a task =
    their results. To do so, it can use all the API functions described
    below. *)
 val run : 'a task -> 'a
+  (* [run] can raise [Deadlock] and [Reentrancy]; publish them? *)
 
 val yield: unit -> unit
 

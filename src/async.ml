@@ -461,6 +461,11 @@ type state = {
        resumptions until the main resumption terminates (or until a deadlock
        is reached). *)
 
+  mutable running: bool;
+    (**Whether a call to [run_fut] or [run] is currently in progress. This
+       is used to detect reentrant calls to [run], which must be forbidden,
+       because each invocation of [run] should have its own [state] record. *)
+
   mutable next_future_id: int;
     (**The next available future ID. This field is used for debugging only. *)
 
@@ -471,18 +476,28 @@ type state = {
 let s : state =
   let current = dummy_thread
   and queue = Queue.create()
+  and running = false
   and next_future_id = 0 in
-  { current; queue; next_future_id }
+  { current; queue; running; next_future_id }
 
 (* Initialize or re-initialize the scheduler's state. *)
 
-(* [init()] is invoked by [run_fut] and [run]. *)
+(* [init action] runs [action()] with a re-initialized scheduler state.
+   It detects and forbids reentrant calls. *)
 
-let[@inline] init() =
+(* is invoked by [run_fut] and [run]. *)
+
+exception Reentrancy
+
+let[@inline] init action =
+  if s.running then raise Reentrancy;
   s.current <- dummy_thread;
-  Queue.clear s.queue
-    (* [next_future_id] is not reset because a future can persist
-       across several calls to [run]. *)
+  Queue.clear s.queue;
+  s.running <- true;
+    (* [next_future_id] is not reset because
+       a future can persist across several calls to [run]. *)
+  let finished() = s.running <- false in
+  Fun.protect ~finally:finished action
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1541,7 +1556,7 @@ let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
 
 let run_fut (fut : 'a future) : 'a =
   (* Re-initialize the scheduler's global state. *)
-  init();
+  init @@ fun () ->
   (* We wish to treat [fut] as the root future. *)
   (* Create an edge whose child is [fut]. *)
   let edge = new_edge fut in
