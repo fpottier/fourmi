@@ -687,7 +687,7 @@ let[@inline] new_ordinary_future_and_thread
 : 'a future * thread =
   (* Create a new uninitialized future. *)
   let fut = new_future "ordinary" in
-  (* Create a new thread that runs the resumption [resumption s fut]. *)
+  (* Create a new thread that runs the resumption [resumption fut]. *)
   let thread = new_thread fut (resumption fut) in
   (* Complete the initialization of [fut]. *)
   init_ordinary_future fut thread;
