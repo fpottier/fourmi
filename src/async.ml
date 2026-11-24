@@ -551,25 +551,26 @@ let is_active (fut : 'a future) : bool =
 let[@inline] is_inactive fut =
   not (is_active fut)
 
-(* If the result of the future [fut] is available then [query fut] returns
-   this result. Otherwise [query fut] returns [fut] or an equivalent future,
-   obtained from [fut] by following a chain of [Proxy] links. *)
+(* If the result of the future [fut] is available then [unsafe_query fut]
+   returns this result. Otherwise [unsafe_query fut] returns [fut] or an
+   equivalent future, obtained from [fut] by following a chain of [Proxy]
+   links. *)
 
-(* [fut] is not necessarily active. Therefore one should not use [query]
-   directly. Instead, one should use [cleanup_and_query], which performs a
-   cleanup phase, starting at [fut], before attempting to determine whether
-   [fut] has been fulfilled. *)
+(* [fut] is not necessarily active. Thus, one should not use [unsafe_query]
+   directly. Instead, one should use [query], which performs a cleanup
+   phase, starting at [fut], before attempting to determine whether [fut]
+   has been fulfilled. *)
 
-(* Once a [Proxy] link has been followed, we cannot reach a fulfilled future.
-   This is true both in the case where [fut] is active and in the case where
-   [fut] is inactive and has been cleaned up. The auxiliary function [query1]
-   verifies this fact. *)
+(* Once a [Proxy] link has been followed, we cannot reach a fulfilled
+   future. This is true both in the case where [fut] is active and in the
+   case where [fut] is inactive and has been cleaned up. The auxiliary
+   function [unsafe_query1] verifies this fact. *)
 
 type 'a reply =
   | Result of 'a
   | Future of 'a future
 
-let rec query1 (fut : 'a future) : 'a reply =
+let rec unsafe_query1 (fut : 'a future) : 'a reply =
   assert (is_initialized fut);
   assert (is_unfulfilled fut);
   match fut.status with
@@ -580,9 +581,9 @@ let rec query1 (fut : 'a future) : 'a reply =
   | Earliest _ ->
       Future fut
   | Proxy { edge; _ } ->
-      query1 edge.child
+      unsafe_query1 edge.child
 
-let query (fut : 'a future) : 'a reply =
+let unsafe_query (fut : 'a future) : 'a reply =
   assert (is_initialized fut);
   match fut.status with
   | Done { result } ->
@@ -593,7 +594,7 @@ let query (fut : 'a future) : 'a reply =
   | Earliest _ ->
       Future fut
   | Proxy { edge; _ } ->
-      query1 edge.child
+      unsafe_query1 edge.child
 
 (* [thread_is_active thread] determines whether the thread [thread] is
    active. This is done by testing whether the future [thread.fulfills]
@@ -911,7 +912,7 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
 (* The cleanup stage. *)
 
 let rec cleanup_future : 'a . state -> mark -> 'a future -> unit =
-fun s visited fut ->
+  fun s visited fut ->
   assert (is_initialized fut);
   (* An inactive parent can have an active child, so this future
      may be active. If it is active, ignore it. If it is inactive,
@@ -922,7 +923,7 @@ fun s visited fut ->
   end
 
 and cleanup_unvisited_future : 'a . state -> mark -> 'a future -> unit =
-fun s visited fut ->
+  fun s visited fut ->
   assert (is_initialized fut);
   assert (is_inactive fut);
   if debug then info "Cleaning up future %d." fut.id;
@@ -990,7 +991,7 @@ fun s visited fut ->
           ()
 
 and cleanup_edge : 'a . state -> mark -> 'a edge -> unit =
-fun s visited edge ->
+  fun s visited edge ->
   cleanup_future s visited edge.child;
   (* If the child future has become fulfilled,
      then send a notification up this edge. *)
@@ -1007,25 +1008,25 @@ and cleanup_optional_untyped_edge s visited edge =
   | Some (UE edge) ->
       cleanup_edge s visited edge
 
-and cleanup_and_query : 'a . state -> 'a future -> 'a reply =
-fun s fut ->
+and query : 'a . state -> 'a future -> 'a reply =
+  fun s fut ->
   assert (is_initialized fut);
   (* If [fut] is fulfilled or active then cleanup is not necessary. *)
   match fut.status with
   | Uninitialized
   | Done _ ->
-      query fut
+      unsafe_query fut
   | Ordinary { parents; _ }
   | Proxy { parents; _ }
   | Join { parents; _ }
   | Earliest { parents; _ } ->
       if Option.is_some parents then
-        query fut
+        unsafe_query fut
       else
         (* [fut] is not fulfilled, and is inactive. *)
         let visited = Mark.fresh() in
         cleanup_future s visited fut;
-        query fut
+        unsafe_query fut
 
 (* The activation stage. *)
 
@@ -1042,7 +1043,7 @@ fun s fut ->
 (* We expect the future [edge.child] to be unfulfilled. *)
 
 and activate_edge : 'a . state -> 'a edge -> unit =
-fun s edge ->
+  fun s edge ->
   assert (not edge.active);
   edge.active <- true;
   (* Because [edge.parent] was inactive until now,
@@ -1068,25 +1069,25 @@ fun s edge ->
         assert false
     | Ordinary { thread; _ } ->
         begin match thread.awaits with
-        | None ->
-            (* The thread associated with [fut] is not waiting on a
-               future. Then, this thread must be scheduled. *)
-            assert (thread_is_active thread);
-            enqueue s thread
-        | Some (UE edge) ->
-            (* The thread associated with [fut] is waiting on the future
-               [edge.child]. Then, this thread must not be scheduled; that
-               would be useless. Instead, this thread's outgoing edge must
-               be activated. *)
-            activate_edge s edge
+          | None ->
+              (* The thread associated with [fut] is not waiting on a
+                 future. Then, this thread must be scheduled. *)
+              assert (thread_is_active thread);
+              enqueue s thread
+          | Some (UE edge) ->
+              (* The thread associated with [fut] is waiting on the future
+                 [edge.child]. Then, this thread must not be scheduled; that
+                 would be useless. Instead, this thread's outgoing edge must
+                 be activated. *)
+              activate_edge s edge
         end
-  | Proxy { edge; _ } ->
-      activate_edge s edge
-  | Join { edge; _ } ->
-      activate_edge s edge
-  | Earliest { edge1; edge2; _ } ->
-      activate_edge s edge1;
-      activate_edge s edge2
+    | Proxy { edge; _ } ->
+        activate_edge s edge
+    | Join { edge; _ } ->
+        activate_edge s edge
+    | Earliest { edge1; edge2; _ } ->
+        activate_edge s edge1;
+        activate_edge s edge2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1111,7 +1112,7 @@ fun s edge ->
    be the case that [edge.child] is fulfilled already. *)
 
 and deactivate_edge : 'a . 'a edge -> unit =
-fun edge ->
+  fun edge ->
   if debug then
     info "Removing the edge %s -> %d."
       (show_edge_parent edge) edge.child.id;
@@ -1133,20 +1134,20 @@ fun edge ->
         ()
     | Ordinary { thread; _ } ->
         begin match thread.awaits with
-        | None ->
-            (* Leave [thread] in the queue, even though it becomes inactive. *)
-            if debug then
-              info "Thread %d becomes inactive." (thread_id thread)
-        | Some (UE edge) ->
-            deactivate_edge edge
+          | None ->
+              (* Leave [thread] in the queue, even though it becomes inactive. *)
+              if debug then
+                info "Thread %d becomes inactive." (thread_id thread)
+          | Some (UE edge) ->
+              deactivate_edge edge
         end
-  | Proxy { edge; _ } ->
-      deactivate_edge edge
-  | Join { edge; _ } ->
-      deactivate_edge edge
-  | Earliest { edge1; edge2; _ } ->
-      deactivate_edge edge1;
-      deactivate_edge edge2
+    | Proxy { edge; _ } ->
+        deactivate_edge edge
+    | Join { edge; _ } ->
+        deactivate_edge edge
+    | Earliest { edge1; edge2; _ } ->
+        deactivate_edge edge1;
+        deactivate_edge edge2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1165,7 +1166,7 @@ fun edge ->
      This mode of invocation is NOT used for earliest futures. *)
 
 and notify : type a . state -> a edge -> a -> unit =
-fun s edge result ->
+  fun s edge result ->
   if debug && edge.notify <> NRoot then
     info "Sending a notification up the %s edge %s -> %d"
       (if edge.active then "active" else "inactive")
@@ -1235,7 +1236,7 @@ and notify_parents (s : state) (parents : 'a edge option) (result : 'a) : unit =
 (* [fut] must not be fulfilled already. *)
 
 and fulfill : 'a . state -> 'a future -> 'a -> unit =
-fun s fut result ->
+  fun s fut result ->
   assert (
     is_unfulfilled fut ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
@@ -1251,7 +1252,7 @@ fun s fut result ->
    with the same outgoing edge. *)
 
 and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
-fun fut edge ->
+  fun fut edge ->
   assert (is_unfulfilled fut);
   assert (is_unfulfilled edge.child);
   if debug then
@@ -1274,10 +1275,10 @@ fun fut edge ->
    This permission is consumed. *)
 
 and link : type a . state -> a future -> a future -> unit =
-fun s fut1 fut2 ->
+  fun s fut1 fut2 ->
   assert (is_unfulfilled fut1);
   assert (is_active fut1);
-  match cleanup_and_query s fut2 with
+  match query s fut2 with
   | Result result ->
       fulfill s fut1 result
   | Future fut2 ->
@@ -1313,25 +1314,24 @@ and handle_termination s () : unit =
 (* [active] determines whether the thread [thread] is currently active,
    that is, reachable from the root future. *)
 
-(* The future [fut] must be the result of a call to [cleanup_and_query].
-   Therefore it has been cleaned up already. Therefore using [activate_edge]
-   is safe. *)
+(* The future [fut] must be the result of a call to [query]. Therefore
+   it is clean, so one can safely call [activate_edge]. *)
 
 and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
-= fun s active thread fut k ->
-  assert (is_unfulfilled fut);
-  assert (active = thread_is_active thread);
-  (* Create a new edge from [thread] to [fut], so that,
-     once [fut] is fulfilled, [thread] is awoken and
-     applies [k] to the result of [fut]. *)
-  let edge = new_edge fut in
-  edge.notify <- NAwaken (thread, k);
-  thread.awaits <- Some (UE edge);
-  (* If [thread] is currently active, activate this edge.
-     This adds one active parent to [fut]. *)
-  if active then
-    activate_edge s edge
-  (* [thread] is blocked but remains possibly active. *)
+  = fun s active thread fut k ->
+    assert (is_unfulfilled fut);
+    assert (active = thread_is_active thread);
+    (* Create a new edge from [thread] to [fut], so that,
+       once [fut] is fulfilled, [thread] is awoken and
+       applies [k] to the result of [fut]. *)
+    let edge = new_edge fut in
+    edge.notify <- NAwaken (thread, k);
+    thread.awaits <- Some (UE edge);
+    (* If [thread] is currently active, activate this edge.
+       This adds one active parent to [fut]. *)
+    if active then
+      activate_edge s edge
+(* [thread] is blocked but remains possibly active. *)
 
 (* [awaken s thread k result] awakens the thread [thread], in charge of
    running continuation [k] applied to result [result]. This thread must
@@ -1340,7 +1340,7 @@ and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
    that every active and unblocked thread is in the queue. *)
 
 and awaken : 'a . state -> thread -> 'a cont -> 'a -> unit =
-fun s thread k result ->
+  fun s thread k result ->
   assert (is_blocked thread);
   thread.resumption <- resumption s k result;
   thread.awaits <- None;
@@ -1352,26 +1352,26 @@ fun s thread k result ->
    thread. *)
 
 and handle_wait : 'a . state -> 'a future -> 'a cont -> unit
-= fun s fut k ->
-  let thread = s.current in
-  (* We expect the current thread to be active. *)
-  assert (thread_is_active thread);
-  if debug then
-    info "Thread %d waits on future %d." (thread_id thread) fut.id;
-  (* The current thread wants to wait on [fut]. *)
-  match cleanup_and_query s fut with
-  | Result result ->
-      (* The result of [fut] is already available.
-         Resume the current thread immediately. *)
-      if debug then
-        info "Thread %d continues." (thread_id thread);
-      handle s k result
-  | Future fut ->
-      assert (is_unfulfilled fut);
-      (* The result is not available. Suspend the current thread. *)
-      block s true thread fut k;
-      (* [thread] is not enqueued again. Run some other thread. *)
-      dequeue s
+  = fun s fut k ->
+    let thread = s.current in
+    (* We expect the current thread to be active. *)
+    assert (thread_is_active thread);
+    if debug then
+      info "Thread %d waits on future %d." (thread_id thread) fut.id;
+    (* The current thread wants to wait on [fut]. *)
+    match query s fut with
+    | Result result ->
+        (* The result of [fut] is already available.
+           Resume the current thread immediately. *)
+        if debug then
+          info "Thread %d continues." (thread_id thread);
+        handle s k result
+    | Future fut ->
+        assert (is_unfulfilled fut);
+        (* The result is not available. Suspend the current thread. *)
+        block s true thread fut k;
+        (* [thread] is not enqueued again. Run some other thread. *)
+        dequeue s
 
 (* [handle_yield s k] handles a request by the current thread to yield.
    [k] is the continuation of the current thread. *)
@@ -1405,7 +1405,7 @@ and handle_yield (s : state) (k : unit cont) : unit =
    handler. This is boilerplate code; nothing interesting happens here. *)
 
 and handle : type a . state -> a cont -> a -> unit =
-fun s k x ->
+  fun s k x ->
   continue_with k x {
     retc = handle_termination s;
     exnc = raise;
@@ -1426,7 +1426,7 @@ fun s k x ->
    effect handler and does not perform effects. *)
 
 and resumption : state -> 'a cont -> 'a -> unit resumption =
-fun s k x ->
+  fun s k x ->
   let resume () = handle s k x in
   Resumption resume
 
@@ -1434,7 +1434,7 @@ fun s k x ->
    but is more efficient (it builds a smaller closure). *)
 
 and unit_resumption : state -> unit cont -> unit resumption =
-fun s k ->
+  fun s k ->
   let resume () = handle s k () in
   Resumption resume
 
@@ -1479,7 +1479,7 @@ let run (type w) (main : w task) : w =
   dequeue s;
   (* Extract the result. Cleanup is not required here. *)
   assert (is_fulfilled fut || is_active fut);
-  match query fut with
+  match unsafe_query fut with
   | Result result ->
       result
   | Future _ ->
@@ -1535,7 +1535,7 @@ let[@inline] spawn_wait (task : 'a future task) : 'a future =
 
 let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
   let s = get_state() in
-  match cleanup_and_query s fut1 with
+  match query s fut1 with
   | Result result ->
       spawn (fun () -> f result)
   | Future fut1 ->
@@ -1557,7 +1557,7 @@ let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
 
 let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
   let s = get_state() in
-  match cleanup_and_query s fut1 with
+  match query s fut1 with
   | Result result ->
       spawn_wait (fun () -> task result)
   | Future fut1 ->
@@ -1618,7 +1618,7 @@ let _join (fut : 'a future future) : 'a future =
 
 let join (fut : 'a future future) : 'a future =
   let s = get_state() in
-  match cleanup_and_query s fut with
+  match query s fut with
   | Result result ->
       result
   | Future fut ->
@@ -1681,7 +1681,7 @@ let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
 
 let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
   let s = get_state() in
-  match cleanup_and_query s fut1, cleanup_and_query s fut2 with
+  match query s fut1, query s fut2 with
   | Result result1, _ ->
       if decisive1 result1 then fut1 else fut2
   | _, Result result2 ->
