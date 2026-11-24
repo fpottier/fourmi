@@ -1013,9 +1013,10 @@ and query : 'a . state -> 'a future -> 'a reply =
   assert (is_initialized fut);
   (* If [fut] is fulfilled or active then cleanup is not necessary. *)
   match fut.status with
-  | Uninitialized
-  | Done _ ->
-      unsafe_query fut
+  | Uninitialized ->
+      assert false
+  | Done { result } ->
+      Result result
   | Ordinary { parents; _ }
   | Proxy { parents; _ }
   | Join { parents; _ }
