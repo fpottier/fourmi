@@ -1728,3 +1728,11 @@ let[@inline] disjunction task1 task2 =
 
 let[@inline] disjunction_fut fut1 fut2 =
   earliest_decisive_fut is_true is_true fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
+(* A public version of [query]. *)
+
+let[@inline] query fut =
+  let s = get_state() in
+  query s fut

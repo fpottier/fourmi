@@ -85,6 +85,12 @@ val earliest_decisive_fut: ('a -> bool) -> ('a -> bool) -> 'a future -> 'a futur
 val conjunction_fut: bool future -> bool future -> bool future
 val disjunction_fut: bool future -> bool future -> bool future
 
+type 'a reply =
+  | Result of 'a
+  | Future of 'a future
+
+val query : 'a future -> 'a reply
+
 (* -------------------------------------------------------------------------- *)
 
 (* {2 Monadic API} *)
