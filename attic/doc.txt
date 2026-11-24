@@ -1,0 +1,23 @@
+To implement demand-driven execution, the library maintains a dynamic
+dependency graph, whose vertices are futures and where an edge from future {i
+A} to future {i B} means that {i A} is waiting for {i B} to receive a result.
+At all times, this graph is acyclic; it is a DAG. The future associated with
+the main thread, also known as the root future, is the entry point of this
+graph. At every moment, if a future {i F} is currently reachable from the root
+future, then the result of {i F} is currently possibly needed, and the thread
+associated with {i F} is allowed to continue its execution. If, on the
+contrary, {i F} is currently unreachable, then the result of {i F} is
+currently unneeded, and this thread is not allowed to run. The structure of
+the dependency graph changes over time. In particular, edges can appear and
+disappear. For example, a call to {!wait} creates a new edge. On the contrary,
+when one the two threads spawned by {!earliest} terminates, the result of the
+other thread is no longer required, so an edge is destroyed. Therefore, a
+reachable vertex can become unreachable, and vice-versa. As a result, a thread
+whose execution has begun can be suspended, and a suspended thread can be
+resumed.
+
+If the future that represents the result of a thread becomes unreachable in
+the eyes of the garbage collector (that is, unreachable from the root future,
+and also unreachable from every future that the client holds) then this future
+and this thread are reclaimed by the garbage collector, and this thread is
+never allowed to continue its execution.

@@ -1,6 +1,11 @@
 {0 Fourmi}
 
-[fourmi] is an OCaml library that offers [...].
+[fourmi] is an OCaml library that offers {i speculative parallel execution}
+of user-defined tasks on a single hardware thread.
+
+{1 API}
+
+The library offers just one module, {!Fourmi.Async}.
 
 {1 Installation and Usage}
 
