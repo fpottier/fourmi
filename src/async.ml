@@ -1331,10 +1331,7 @@ fun fut1 fut2 ->
 
 (* -------------------------------------------------------------------------- *)
 
-(* Handlers for the main three types of events: termination of a thread,
-   wait, yield. [handle_termination], [handle_wait] and [handle_yield]
-   form the three branches of our effect handler. They are later grouped
-   in the function [handle]. *)
+(* Blocking and awakening a thread. *)
 
 (* [block active thread fut k] blocks (suspends) the thread [thread],
    waiting on the future [fut]. The thread is meant to be awoken once
@@ -1376,6 +1373,15 @@ fun thread k result ->
   thread.awaits <- None;
   if thread_is_active thread then
     enqueue thread
+
+(* -------------------------------------------------------------------------- *)
+
+(* Handlers for the main three types of events: termination of a thread,
+   wait, yield. [handle_termination], [handle_wait] and [handle_yield]
+   form the three branches of our effect handler. They are later grouped
+   in the function [handle]. *)
+
+(* [handle_termination] has been defined higher up already. *)
 
 (* [handle_wait fut k] handles a request by the current thread to
    wait for the future [fut]. [k] is the continuation of the current
@@ -1468,17 +1474,6 @@ and unit_resumption : unit cont -> unit resumption =
 
 (* -------------------------------------------------------------------------- *)
 
-(* If [Deadlock] is raised, then the main thread has not finished. Yet, no
-   thread is able to make progress; every thread is blocked. *)
-
-(* As long as the dependency graph remains acyclic, a deadlock cannot
-   happen. The dependency graph is normally acyclic, but could become
-   cyclic if the client uses mutable state in a strange way. *)
-
-exception Deadlock
-
-(* -------------------------------------------------------------------------- *)
-
 (* When creating a new future [fut] and spawning a new thread to run a task
    [task], we face two choices, each of which has two branches:
 
@@ -1558,16 +1553,27 @@ let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
 
 (* -------------------------------------------------------------------------- *)
 
+(* If [Deadlock] is raised, then the main thread has not finished. Yet, no
+   thread is able to make progress; every thread is blocked. *)
+
+(* As long as the dependency graph remains acyclic, a deadlock cannot
+   happen. The dependency graph is normally acyclic, but could become
+   cyclic if the client uses mutable state in a strange way. *)
+
+exception Deadlock
+
+(* -------------------------------------------------------------------------- *)
+
 (* The toplevel functions, [run_fut] and [run]. *)
 
-(* [run_fut] (re-)initializes the scheduler's state, activates the future
-   [fut], runs the scheduler until it terminates (or a deadlock occurs),
-   and extracts the result of the future [fut]. *)
+(* [private_run_fut] (re-)initializes the scheduler's state, activates the
+   future [fut], runs the scheduler until it terminates (or a deadlock
+   occurs), and extracts the result of the future [fut]. *)
 
 (* [fut] must be clean; that is, either freshly created by [spawn], or
    the result of a call to [query]. *)
 
-let run_fut (fut : 'a future) : 'a =
+let private_run_fut (fut : 'a future) : 'a =
   (* Re-initialize the scheduler's global state. *)
   init @@ fun () ->
   (* We wish to treat [fut] as the root future. *)
@@ -1590,14 +1596,14 @@ let run_fut (fut : 'a future) : 'a =
 
 let[@inline] run (task : 'a task) : 'a =
   (* Create a future for the task [task] and run it. *)
-  run_fut (spawn task)
+  private_run_fut (spawn task)
 
 let run_fut fut =
   match query fut with
   | Result result ->
       result
   | Future fut ->
-      run_fut fut
+      private_run_fut fut
 
 (* -------------------------------------------------------------------------- *)
 
