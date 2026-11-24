@@ -2,13 +2,10 @@
 
 ## Code
 
-* In the `cleanup` functions and related functions,
-  can we remove the parameter `s`?
-  It could be stored in `NAwaken`,
-  costing some memory,
-  but removing the need to perform an effect.
-  Or should we make it lazy, so we perform an effect *at most once*
-  to obtain it?
+* Document which functions must be called in the scope of `run`
+  and which functions can be called outside of its scope.
+  Dynamically test that `s.running` is true when a function
+  of the first kind is invoked.
 
 * It is currently *not* OK to let a continuation be reclaimed by the GC
   without explicitly discontinuing it.
@@ -17,8 +14,6 @@
     system resources, or these resources might be lost.
   + Or, keep a list of all threads and perform manual collection.
   + Or, install a finalizer on each thread.
-
-* Could we get rid of the `State` effect?
 
 * Should `query` perform path compression?
   Are there other places where path compression should be performed?
@@ -40,17 +35,9 @@
   + Only for one dedicated exception, `Cancel`?
   + Or for every exception?
 
-* Is it a problem that we use fixed (toplevel) effect names?
-  Does this cause problems with nested uses of `run`?
-  Should each instance of `run` have
-  its own effect names and/or
-  its own abstract type of futures?
-
 * Consider building a form of granularity control inside `yield`.
   A call to `yield` really yields only one out of `K` times.
   One counter per thread.
-
-* Expose `cleanup_and_query` in the public API.
 
 ## Documentation
 
@@ -72,7 +59,7 @@
 ## Release
 
 * Before releasing, use `cppo` to get rid of the debugging support fields
-  `fut.id` and `edge.active`.
+  `fut.id` and `edge.active` and `s.next_future_id.
 
 ## Related Work
 
