@@ -385,7 +385,7 @@ let fail format =
 
 (* By convention, the ID of a thread is the ID of its target future. *)
 
-let[@inline] thread_id thread =
+let thread_id thread =
   match thread.fulfills with
   | UF fut ->
       fut.id
@@ -554,9 +554,7 @@ let is_join fut =
 let is_earliest fut =
   match fut.status with Earliest _ -> true | _ -> false
 
-(* [is_initialized fut] tests whether [fut] has been initialized. *)
-
-let[@inline] is_initialized (fut : 'a future) : bool =
+let is_initialized fut =
   match fut.status with Uninitialized -> false | _ -> true
 
 (* [is_fulfilled fut] tests whether [fut] has already received a value. *)
@@ -567,7 +565,7 @@ let[@inline] is_initialized (fut : 'a future) : bool =
    Instead, assuming that [fut] is active, we expect [fut'] to notify [fut],
    which then becomes fulfilled and no longer points to [fut']. *)
 
-let[@inline] is_fulfilled (fut : 'a future) : bool =
+let is_fulfilled (fut : 'a future) : bool =
   assert (is_initialized fut);
   match fut.status with
   | Done _ ->
@@ -676,7 +674,7 @@ let[@inline] is_unblocked thread =
 (* [new_thread fut resumption] creates a new thread in charge of fulfilling
    the future [fut] by running the resumption [resumption]. *)
 
-let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
+let[@inline] new_thread (fut : 'a future) (resumption : unit resumption) : thread =
   let fulfills = UF fut
   and awaits = None
   and enqueued = false in
@@ -690,7 +688,7 @@ let new_thread (fut : 'a future) (resumption : unit resumption) : thread =
    this edge is used. This two-step initialization process is necessary
    because the parent future and the edge point to each other. *)
 
-let new_edge child =
+let[@inline] new_edge child =
   assert (is_unfulfilled child);
   let notify = NRoot
   and active = false in
@@ -703,7 +701,7 @@ let new_edge child =
    because the future and its status point to each other. The string
    [kind] is used in a debugging message. *)
 
-let new_future (kind : string) : 'a future =
+let[@inline] new_future (kind : string) : 'a future =
   let id = s.next_future_id in
   s.next_future_id <- id + 1;
   let status = Uninitialized
@@ -807,6 +805,17 @@ let rec dequeue () : unit =
           info "Now running thread %d." (thread_id thread);
         execute resumption
       end
+
+(* [handle_termination ()] handles the termination of the current thread. *)
+
+let[@inline] handle_termination () =
+  (* The current thread has terminated. There may remain some threads
+     in the queue, whose results are not needed by this thread. *)
+  let thread = s.current in
+  if debug then
+    info "Thread %d terminates." (thread_id thread);
+  (* Run one of the remaining active threads. *)
+  dequeue()
 
 (* -------------------------------------------------------------------------- *)
 
@@ -915,6 +924,20 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
     next.prev <- prev;
     if entry parents == edge then Some prev else parents
   end
+
+(* [init_proxy_future fut edge] changes the existing future [fut],
+   which has an existing outgoing edge [edge], into a proxy future
+   with the same outgoing edge. *)
+
+let[@inline] init_proxy_future (fut : 'a future) (edge : 'a edge) =
+  assert (is_unfulfilled fut);
+  assert (is_unfulfilled edge.child);
+  if debug then
+    info "Future %d becomes a proxy future, watching future %d."
+      fut.id edge.child.id;
+  let parents = get_parents fut in
+  edge.notify <- NProxy fut;
+  fut.status <- Proxy { parents; edge }
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1254,24 +1277,6 @@ and notify : type a . a edge -> a -> unit =
            watching just the other child. *)
         init_proxy_future parent other
 
-(* [notify_parents parents result] iterates on the (possibly empty) bag of
-   edges [parents]. Every parent vertex is notified that the result of the
-   child vertex is [result]. *)
-
-and notify_parents (parents : 'a edge option) (result : 'a) : unit =
-  match parents with
-  | None ->
-      ()
-  | Some edge ->
-      (* Iteration on a circular doubly-linked list. *)
-      let sentinel = edge in
-      let rec loop edge =
-        notify edge result;
-        let next = edge.next in
-        if next != sentinel then loop next
-      in
-      loop edge
-
 (* [fulfill fut result] fulfills the future [fut] with the result [result]
    and notifies [fut]'s parents in the dependency graph. *)
 
@@ -1287,22 +1292,18 @@ and fulfill : 'a . 'a future -> 'a -> unit =
     info "Future %d is now fulfilled." fut.id;
   let parents = get_parents fut in
   fut.status <- Done { result };
-  notify_parents parents result
-
-(* [init_proxy_future fut edge] changes the existing future [fut],
-   which has an existing outgoing edge [edge], into a proxy future
-   with the same outgoing edge. *)
-
-and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
-  fun fut edge ->
-  assert (is_unfulfilled fut);
-  assert (is_unfulfilled edge.child);
-  if debug then
-    info "Future %d becomes a proxy future, watching future %d."
-      fut.id edge.child.id;
-  let parents = get_parents fut in
-  edge.notify <- NProxy fut;
-  fut.status <- Proxy { parents; edge }
+  match parents with
+  | None ->
+      ()
+  | Some edge ->
+      (* Iteration on a circular doubly-linked list. *)
+      let sentinel = edge in
+      let rec loop edge =
+        notify edge result;
+        let next = edge.next in
+        if next != sentinel then loop next
+      in
+      loop edge
 
 (* [link fut1 fut2] transforms [fut1] into a proxy for [fut2]. *)
 
@@ -1317,7 +1318,7 @@ and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
    This permission is consumed. *)
 
 and link : type a . a future -> a future -> unit =
-  fun fut1 fut2 ->
+fun fut1 fut2 ->
   assert (is_unfulfilled fut1);
   assert (is_active fut1);
   match query fut2 with
@@ -1334,17 +1335,6 @@ and link : type a . a future -> a future -> unit =
    wait, yield. [handle_termination], [handle_wait] and [handle_yield]
    form the three branches of our effect handler. They are later grouped
    in the function [handle]. *)
-
-(* [handle_termination ()] handles the termination of the current thread. *)
-
-and handle_termination () : unit =
-  (* The current thread has terminated. There may remain some threads
-     in the queue, whose results are not needed by this thread. *)
-  let thread = s.current in
-  if debug then
-    info "Thread %d terminates." (thread_id thread);
-  (* Run one of the remaining active threads. *)
-  dequeue()
 
 (* [block active thread fut k] blocks (suspends) the thread [thread],
    waiting on the future [fut]. The thread is meant to be awoken once
