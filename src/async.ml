@@ -739,7 +739,9 @@ let[@inline] new_ordinary_future_and_thread
   (* Complete the initialization of [fut]. *)
   init_ordinary_future fut thread;
   (* Done. *)
-  if debug then info "Spawning new thread %d." fut.id;
+  if debug then
+    info "Thread %d spawns a new thread %d."
+      (thread_id s.current) fut.id;
   fut, thread
 
 let[@inline] new_ordinary_future resumption : 'a future =
