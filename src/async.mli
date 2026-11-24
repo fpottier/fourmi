@@ -26,15 +26,14 @@
 
 (* {2 Basic Functions} *)
 
-(* TODO this API only allows constructing a tree of tasks;
-   the future API allows naming the result of a task,
-   thereby sharing it; allows constructing a DAG of tasks,
-   or even a cyclic graph, though this is invalid *)
-
+(**A task whose result type is ['a] is just a function of type [unit -> 'a]. *)
 type 'a task =
   unit -> 'a
-  (* task is allowed to spawn, wait, yield *)
 
+(**[run task] runs the task [task] and returns its result. This task is
+   allowed to create subtasks, to let them run in parallel, and to await
+   their results. To do so, it can use all the API functions described
+   below. *)
 val run : 'a task -> 'a
 
 val yield: unit -> unit
@@ -44,6 +43,11 @@ val yield: unit -> unit
 (* {2 Task API} *)
 
 (* high-level *)
+
+(* TODO this API only allows constructing a tree of tasks;
+   the future API allows naming the result of a task,
+   thereby sharing it; allows constructing a DAG of tasks,
+   or even a cyclic graph, though this is invalid *)
 
 (* There is no [par] combinator because it would not be useful.
    In our setting, running two tasks in parallel, until they
@@ -67,6 +71,8 @@ val disjunction: bool task -> bool task -> bool
 
 type 'a future
   (* can a future created by one instance of [run] be used outside of it? *)
+
+val run_fut : 'a future -> 'a
 
 val spawn: 'a task -> 'a future
   (* the new thread does not start running immediately; it starts

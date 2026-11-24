@@ -463,19 +463,26 @@ type state = {
 
 }
 
+(* Allocate the scheduler's state. *)
+
+let s : state =
+  let current = dummy_thread
+  and queue = Queue.create() in
+  { current; queue }
+
+(* Initialize or re-initialize the scheduler's state. *)
+
+let init() =
+  s.current <- dummy_thread;
+  Queue.clear s.queue
+
 (* -------------------------------------------------------------------------- *)
 
 (* The effects that we use internally. *)
 
 type _ Effect.t +=
-| State : state Effect.t
 | Wait  : 'a future -> 'a Effect.t
 | Yield : unit Effect.t
-
-(* A private function. *)
-
-let[@inline] get_state () : state =
-  perform State
 
 (* Public combinators. *)
 
@@ -676,13 +683,12 @@ let[@inline] init_earliest_future fut edge1 edge2 decisive1 decisive2 =
   let parents = None in
   fut.status <- Earliest { parents; edge1; edge2; decisive1; decisive2 }
 
-(* [new_ordinary_future_and_thread s resumption] creates a new ordinary
+(* [new_ordinary_future_and_thread resumption] creates a new ordinary
    future [fut] together with a new thread, initializes this thread's
    resumption with the result of [resumption fut], and displays debugging
    messages. It returns the new future [fut] and the thread [thread]. *)
 
 let[@inline] new_ordinary_future_and_thread
-  (s : state)
   (resumption : 'a future -> unit resumption)
 : 'a future * thread =
   (* Create a new uninitialized future. *)
@@ -692,28 +698,20 @@ let[@inline] new_ordinary_future_and_thread
   (* Complete the initialization of [fut]. *)
   init_ordinary_future fut thread;
   (* Done. *)
-  if debug then
-    info "Thread %d spawns new thread %d." (thread_id s.current) fut.id;
+  if debug then info "Spawning new thread %d." fut.id;
   fut, thread
 
-let[@inline] new_ordinary_future s resumption : 'a future =
-  let fut, _thread = new_ordinary_future_and_thread s resumption in
+let[@inline] new_ordinary_future resumption : 'a future =
+  let fut, _thread = new_ordinary_future_and_thread resumption in
   fut
-
-(* Creating a new scheduler state. *)
-
-let new_state () : state =
-  let current = dummy_thread
-  and queue = Queue.create() in
-  { current; queue }
 
 (* -------------------------------------------------------------------------- *)
 
 (* Operations on the scheduler's queue. *)
 
-(* [enqueue s thread] inserts the thread [thread] into the queue. *)
+(* [enqueue thread] inserts the thread [thread] into the queue. *)
 
-let[@inline] enqueue (s : state) (thread : thread) : unit =
+let[@inline] enqueue (thread : thread) : unit =
   (* This thread must be active. *)
   assert (
     thread_is_active thread ||
@@ -732,7 +730,7 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
     Queue.add thread s.queue
   end
 
-(* [dequeue s] extracts a thread from the queue, if there is one, and
+(* [dequeue()] extracts a thread from the queue, if there is one, and
    executes its resumption. As noted above, this runs the scheduler until
    the main thread terminates or until a deadlock is reached. *)
 
@@ -743,7 +741,7 @@ let[@inline] enqueue (s : state) (thread : thread) : unit =
    implies that a thread can appear several times in the queue, which
    implies that a blocked thread can appear in the queue. *)
 
-let rec dequeue (s : state) : unit =
+let rec dequeue () : unit =
   match Queue.take s.queue with
   | exception Queue.Empty ->
       ()
@@ -752,7 +750,7 @@ let rec dequeue (s : state) : unit =
       thread.enqueued <- false;
       (* If this thread is inactive or blocked, ignore it. *)
       if thread_is_inactive thread || is_blocked thread then
-        dequeue s
+        dequeue()
       else begin
         (* Make this thread the current thread. *)
         s.current <- thread;
@@ -911,19 +909,19 @@ let[@inline] remove_edge (edge : 'a edge) (parents : 'a parents) : 'a parents =
 
 (* The cleanup stage. *)
 
-let rec cleanup_future : 'a . state -> mark -> 'a future -> unit =
-  fun s visited fut ->
+let rec cleanup_future : 'a . mark -> 'a future -> unit =
+  fun visited fut ->
   assert (is_initialized fut);
   (* An inactive parent can have an active child, so this future
      may be active. If it is active, ignore it. If it is inactive,
      and if it has not yet been visited, then mark it and visit it. *)
   if is_inactive fut && not (Mark.same fut.mark visited) then begin
     fut.mark <- visited;
-    cleanup_unvisited_future s visited fut
+    cleanup_unvisited_future visited fut
   end
 
-and cleanup_unvisited_future : 'a . state -> mark -> 'a future -> unit =
-  fun s visited fut ->
+and cleanup_unvisited_future : 'a . mark -> 'a future -> unit =
+  fun visited fut ->
   assert (is_initialized fut);
   assert (is_inactive fut);
   if debug then info "Cleaning up future %d." fut.id;
@@ -946,18 +944,18 @@ and cleanup_unvisited_future : 'a . state -> mark -> 'a future -> unit =
          as we are only in the first stage of the activation process;
          so the thread is not inserted into the queue. *)
       assert (thread_is_inactive thread);
-      cleanup_optional_untyped_edge s visited thread.awaits
+      cleanup_optional_untyped_edge visited thread.awaits
 
   | Proxy { edge; _ } ->
       (* If the child future has become fulfilled then [cleanup_edge]
           fulfills this future. *)
-      cleanup_edge s visited edge
+      cleanup_edge visited edge
 
   | Join { edge; _ } ->
       (* If the child future has become fulfilled then [cleanup_edge]
          invokes [link] on this future, causing this future to either
          become fulfilled or become changed into a proxy future. *)
-      cleanup_edge s visited edge
+      cleanup_edge visited edge
 
   | Earliest { edge1; edge2; decisive1; decisive2; _ } ->
       (* We do not want to use two calls to [cleanup_edge] because
@@ -965,51 +963,51 @@ and cleanup_unvisited_future : 'a . state -> mark -> 'a future -> unit =
          properly handled. So, we first clean up the two children,
          then update the status of the parent. *)
       let child1 = edge1.child in
-      cleanup_future s visited child1;
+      cleanup_future visited child1;
       let child2 = edge2.child in
-      cleanup_future s visited child2;
+      cleanup_future visited child2;
       match child1.status, child2.status with
       | Done { result = result1 }, Done { result = result2 } ->
           if decisive1 result1 then
             (* [edge2] is lost, and was inactive, so there is no need to
                call [deactivate_edge]. *)
-            fulfill s fut result1
+            fulfill fut result1
           else
             (* No need to test whether [result2] is decisive. *)
-            fulfill s fut result2
+            fulfill fut result2
       | Done { result = result1 }, _ ->
           if decisive1 result1 then
-            fulfill s fut result1
+            fulfill fut result1
           else
             init_proxy_future fut edge2
       | _, Done { result = result2 } ->
           if decisive2 result2 then
-            fulfill s fut result2
+            fulfill fut result2
           else
             init_proxy_future fut edge1
       | _, _ ->
           ()
 
-and cleanup_edge : 'a . state -> mark -> 'a edge -> unit =
-  fun s visited edge ->
-  cleanup_future s visited edge.child;
+and cleanup_edge : 'a . mark -> 'a edge -> unit =
+  fun visited edge ->
+  cleanup_future visited edge.child;
   (* If the child future has become fulfilled,
      then send a notification up this edge. *)
   match edge.child.status with
   | Done { result } ->
-      notify s edge result
+      notify edge result
   | _ ->
       ()
 
-and cleanup_optional_untyped_edge s visited edge =
+and cleanup_optional_untyped_edge visited edge =
   match edge with
   | None ->
       ()
   | Some (UE edge) ->
-      cleanup_edge s visited edge
+      cleanup_edge visited edge
 
-and query : 'a . state -> 'a future -> 'a reply =
-  fun s fut ->
+and query : 'a . 'a future -> 'a reply =
+  fun fut ->
   assert (is_initialized fut);
   (* If [fut] is fulfilled or active then cleanup is not necessary. *)
   match fut.status with
@@ -1026,7 +1024,7 @@ and query : 'a . state -> 'a future -> 'a reply =
       else
         (* [fut] is not fulfilled, and is inactive. *)
         let visited = Mark.fresh() in
-        cleanup_future s visited fut;
+        cleanup_future visited fut;
         unsafe_query fut
 
 (* The activation stage. *)
@@ -1043,8 +1041,8 @@ and query : 'a . state -> 'a future -> 'a reply =
 
 (* We expect the future [edge.child] to be unfulfilled. *)
 
-and activate_edge : 'a . state -> 'a edge -> unit =
-  fun s edge ->
+and activate_edge : 'a . 'a edge -> unit =
+  fun edge ->
   assert (not edge.active);
   edge.active <- true;
   (* Because [edge.parent] was inactive until now,
@@ -1074,21 +1072,21 @@ and activate_edge : 'a . state -> 'a edge -> unit =
               (* The thread associated with [fut] is not waiting on a
                  future. Then, this thread must be scheduled. *)
               assert (thread_is_active thread);
-              enqueue s thread
+              enqueue thread
           | Some (UE edge) ->
               (* The thread associated with [fut] is waiting on the future
                  [edge.child]. Then, this thread must not be scheduled; that
                  would be useless. Instead, this thread's outgoing edge must
                  be activated. *)
-              activate_edge s edge
+              activate_edge edge
         end
     | Proxy { edge; _ } ->
-        activate_edge s edge
+        activate_edge edge
     | Join { edge; _ } ->
-        activate_edge s edge
+        activate_edge edge
     | Earliest { edge1; edge2; _ } ->
-        activate_edge s edge1;
-        activate_edge s edge2
+        activate_edge edge1;
+        activate_edge edge2
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1154,7 +1152,7 @@ and deactivate_edge : 'a . 'a edge -> unit =
 
 (* Notifications. *)
 
-(* [notify s edge result] sends a notification up along the edge [edge].
+(* [notify edge result] sends a notification up along the edge [edge].
    The parent is notified that the child has produced the result [result]. *)
 
 (* [notify] is called on two different occasions:
@@ -1166,8 +1164,8 @@ and deactivate_edge : 'a . 'a edge -> unit =
      about to be activated.
      This mode of invocation is NOT used for earliest futures. *)
 
-and notify : type a . state -> a edge -> a -> unit =
-  fun s edge result ->
+and notify : type a . a edge -> a -> unit =
+  fun edge result ->
   if debug && edge.notify <> NRoot then
     info "Sending a notification up the %s edge %s -> %d"
       (if edge.active then "active" else "inactive")
@@ -1177,13 +1175,13 @@ and notify : type a . state -> a edge -> a -> unit =
   | NRoot ->
       ()
   | NAwaken (thread, k) ->
-      awaken s thread k result
+      awaken thread k result
   | NProxy parent ->
       assert (is_proxy parent);
-      fulfill s parent result
+      fulfill parent result
   | NJoin parent ->
       assert (is_join parent);
-      link s parent result
+      link parent result
   | NEarliest parent ->
       assert edge.active;
       assert (is_active parent);
@@ -1204,7 +1202,7 @@ and notify : type a . state -> a edge -> a -> unit =
         if debug then
           info "Future %d is fulfilled and stops watching future %d."
             parent.id other.child.id;
-        fulfill s parent result;
+        fulfill parent result;
         deactivate_edge other
       end
       else
@@ -1213,11 +1211,11 @@ and notify : type a . state -> a edge -> a -> unit =
            watching just the other child. *)
         init_proxy_future parent other
 
-(* [notify_parents s parents result] iterates on the (possibly empty) bag of
+(* [notify_parents parents result] iterates on the (possibly empty) bag of
    edges [parents]. Every parent vertex is notified that the result of the
    child vertex is [result]. *)
 
-and notify_parents (s : state) (parents : 'a edge option) (result : 'a) : unit =
+and notify_parents (parents : 'a edge option) (result : 'a) : unit =
   match parents with
   | None ->
       ()
@@ -1225,19 +1223,19 @@ and notify_parents (s : state) (parents : 'a edge option) (result : 'a) : unit =
       (* Iteration on a circular doubly-linked list. *)
       let sentinel = edge in
       let rec loop edge =
-        notify s edge result;
+        notify edge result;
         let next = edge.next in
         if next != sentinel then loop next
       in
       loop edge
 
-(* [fulfill s fut result] fulfills the future [fut] with the result [result]
+(* [fulfill fut result] fulfills the future [fut] with the result [result]
    and notifies [fut]'s parents in the dependency graph. *)
 
 (* [fut] must not be fulfilled already. *)
 
-and fulfill : 'a . state -> 'a future -> 'a -> unit =
-  fun s fut result ->
+and fulfill : 'a . 'a future -> 'a -> unit =
+  fun fut result ->
   assert (
     is_unfulfilled fut ||
     fail "About to fulfill future %d, but it is already fulfilled!" fut.id
@@ -1246,7 +1244,7 @@ and fulfill : 'a . state -> 'a future -> 'a -> unit =
     info "Future %d is now fulfilled." fut.id;
   let parents = get_parents fut in
   fut.status <- Done { result };
-  notify_parents s parents result
+  notify_parents parents result
 
 (* [init_proxy_future fut edge] changes the existing future [fut],
    which has an existing outgoing edge [edge], into a proxy future
@@ -1263,7 +1261,7 @@ and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
   edge.notify <- NProxy fut;
   fut.status <- Proxy { parents; edge }
 
-(* [link s fut1 fut2] transforms [fut1] into a proxy for [fut2]. *)
+(* [link fut1 fut2] transforms [fut1] into a proxy for [fut2]. *)
 
 (* If [fut2] is fulfilled already, then [fut1] immediately becomes
    fulfilled, with the same result. Otherwise, [fut1] becomes a proxy
@@ -1275,39 +1273,37 @@ and[@inline] init_proxy_future : type a . a future -> a edge -> unit =
 (* The caller must hold the unique permission to fulfill [fut1].
    This permission is consumed. *)
 
-and link : type a . state -> a future -> a future -> unit =
-  fun s fut1 fut2 ->
+and link : type a . a future -> a future -> unit =
+  fun fut1 fut2 ->
   assert (is_unfulfilled fut1);
   assert (is_active fut1);
-  match query s fut2 with
+  match query fut2 with
   | Result result ->
-      fulfill s fut1 result
+      fulfill fut1 result
   | Future fut2 ->
       let edge = new_edge fut2 in
       init_proxy_future fut1 edge;
-      activate_edge s edge
+      activate_edge edge
 
 (* -------------------------------------------------------------------------- *)
 
 (* Handlers for the main three types of events: termination of a thread,
-   wait, yield. *)
+   wait, yield. [handle_termination], [handle_wait] and [handle_yield]
+   form the three branches of our effect handler. They are later grouped
+   in the function [handle]. *)
 
-(* In the following functions, [s] is the scheduler's state.
-   [handle s k x] applies the continuation [k] to an argument [x]
-   under our effect handler. *)
+(* [handle_termination ()] handles the termination of the current thread. *)
 
-(* [handle_termination s ()] handles the termination of the current thread. *)
-
-and handle_termination s () : unit =
+and handle_termination () : unit =
   (* The current thread has terminated. There may remain some threads
      in the queue, whose results are not needed by this thread. *)
   let thread = s.current in
   if debug then
     info "Thread %d terminates." (thread_id thread);
   (* Run one of the remaining active threads. *)
-  dequeue s
+  dequeue()
 
-(* [block s active thread fut k] blocks (suspends) the thread [thread],
+(* [block active thread fut k] blocks (suspends) the thread [thread],
    waiting on the future [fut]. The thread is meant to be awoken once
    [fut] terminates; once resumed, it applies the continuation [k] to
    the result produced by [fut]. *)
@@ -1318,8 +1314,8 @@ and handle_termination s () : unit =
 (* The future [fut] must be the result of a call to [query]. Therefore
    it is clean, so one can safely call [activate_edge]. *)
 
-and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
-  = fun s active thread fut k ->
+and block : bool -> thread -> 'a future -> 'a cont -> unit =
+fun active thread fut k ->
     assert (is_unfulfilled fut);
     assert (active = thread_is_active thread);
     (* Create a new edge from [thread] to [fut], so that,
@@ -1331,53 +1327,53 @@ and block : state -> bool -> thread -> 'a future -> 'a cont -> unit
     (* If [thread] is currently active, activate this edge.
        This adds one active parent to [fut]. *)
     if active then
-      activate_edge s edge
-(* [thread] is blocked but remains possibly active. *)
+      activate_edge edge
+    (* [thread] is blocked but remains possibly active. *)
 
-(* [awaken s thread k result] awakens the thread [thread], in charge of
+(* [awaken thread k result] awakens the thread [thread], in charge of
    running continuation [k] applied to result [result]. This thread must
    be currently blocked. It is not necessarily currently active. If it is
    active then it is inserted into the queue. Thus, we maintain the fact
    that every active and unblocked thread is in the queue. *)
 
-and awaken : 'a . state -> thread -> 'a cont -> 'a -> unit =
-  fun s thread k result ->
+and awaken : 'a . thread -> 'a cont -> 'a -> unit =
+fun thread k result ->
   assert (is_blocked thread);
-  thread.resumption <- resumption s k result;
+  thread.resumption <- resumption k result;
   thread.awaits <- None;
   if thread_is_active thread then
-    enqueue s thread
+    enqueue thread
 
-(* [handle_wait s fut k] handles a request by the current thread to
+(* [handle_wait fut k] handles a request by the current thread to
    wait for the future [fut]. [k] is the continuation of the current
    thread. *)
 
-and handle_wait : 'a . state -> 'a future -> 'a cont -> unit
-  = fun s fut k ->
+and handle_wait : 'a . 'a future -> 'a cont -> unit
+= fun fut k ->
     let thread = s.current in
     (* We expect the current thread to be active. *)
     assert (thread_is_active thread);
     if debug then
       info "Thread %d waits on future %d." (thread_id thread) fut.id;
     (* The current thread wants to wait on [fut]. *)
-    match query s fut with
+    match query fut with
     | Result result ->
         (* The result of [fut] is already available.
            Resume the current thread immediately. *)
         if debug then
           info "Thread %d continues." (thread_id thread);
-        handle s k result
+        handle k result
     | Future fut ->
         assert (is_unfulfilled fut);
         (* The result is not available. Suspend the current thread. *)
-        block s true thread fut k;
+        block true thread fut k;
         (* [thread] is not enqueued again. Run some other thread. *)
-        dequeue s
+        dequeue()
 
-(* [handle_yield s k] handles a request by the current thread to yield.
+(* [handle_yield k] handles a request by the current thread to yield.
    [k] is the continuation of the current thread. *)
 
-and handle_yield (s : state) (k : unit cont) : unit =
+and handle_yield (k : unit cont) : unit =
   (* The current thread requests a context switch. *)
   let thread = s.current in
   (* As an optimization, if the queue is currently empty, then no thread
@@ -1387,56 +1383,54 @@ and handle_yield (s : state) (k : unit cont) : unit =
     if debug then
       info "Thread %d offers to yield, but no other thread is ready."
         (thread_id thread);
-    handle s k ()
+    handle k ()
   end
   else begin
     if debug then
       info "Thread %d yields." (thread_id thread);
-    thread.resumption <- unit_resumption s k;
+    thread.resumption <- unit_resumption k;
     (* The current thread remains active and ready. *)
     assert (thread_is_active thread);
-    enqueue s thread;
+    enqueue thread;
     (* Run some other thread first. *)
-    dequeue s
+    dequeue()
   end
 
 (* -------------------------------------------------------------------------- *)
 
-(* [handle s k x] runs the continuation [k] with argument [x] under our effect
+(* [handle k x] runs the continuation [k] with argument [x] under our effect
    handler. This is boilerplate code; nothing interesting happens here. *)
 
-and handle : type a . state -> a cont -> a -> unit =
-  fun s k x ->
+and handle : type a . a cont -> a -> unit =
+  fun k x ->
   continue_with k x {
-    retc = handle_termination s;
+    retc = handle_termination;
     exnc = raise;
     effc = fun (type reply) (eff : reply Effect.t) ->
       match eff with
-      | State ->
-          Some (fun (k : reply cont) -> handle s k s)
       | Wait (fut : reply future) ->
-          Some (fun (k : reply cont) -> handle_wait s fut k)
+          Some (fun (k : reply cont) -> handle_wait fut k)
       | Yield ->
-          Some (fun (k : reply cont) -> handle_yield s k)
+          Some (fun (k : reply cont) -> handle_yield k)
       | _ ->
           None
   }
 
-(* [resumption s k x] builds the function [fun () -> handle s k x] and
+(* [resumption k x] builds the function [fun () -> handle k x] and
    converts it to the type [unit resumption], as it is wrapped in the
    effect handler and does not perform effects. *)
 
-and resumption : state -> 'a cont -> 'a -> unit resumption =
-  fun s k x ->
-  let resume () = handle s k x in
+and resumption : 'a cont -> 'a -> unit resumption =
+  fun k x ->
+  let resume () = handle k x in
   Resumption resume
 
-(* [unit_resumption s k] is equivalent to [resumption s k ()]
+(* [unit_resumption k] is equivalent to [resumption k ()]
    but is more efficient (it builds a smaller closure). *)
 
-and unit_resumption : state -> unit cont -> unit resumption =
-  fun s k ->
-  let resume () = handle s k () in
+and unit_resumption : unit cont -> unit resumption =
+  fun k ->
+  let resume () = handle k () in
   Resumption resume
 
 (* -------------------------------------------------------------------------- *)
@@ -1449,42 +1443,6 @@ and unit_resumption : state -> unit cont -> unit resumption =
    cyclic if the client uses mutable state in a strange way. *)
 
 exception Deadlock
-
-(* -------------------------------------------------------------------------- *)
-
-(* The main function, [run]. *)
-
-(* [run] allocates and initializes the scheduler's state,
-   creates the root future and the main thread,
-   runs the scheduler until the main thread terminates (or a deadlock occurs),
-   extracts the result of the main thread,
-   and returns this result. *)
-
-let run (type w) (main : w task) : w =
-  next_future_id := 0;
-  (* Initialize a scheduler state [s]. *)
-  let s = new_state() in
-  (* Create the root future and the main thread, which runs [main()]
-     and writes its result into the root future. *)
-  let fut = new_ordinary_future s @@ fun fut ->
-    let main () = fulfill s fut (main()) in
-    unit_resumption s (fiber main)
-  in
-  (* Create an edge whose child is the root future. *)
-  let edge = new_edge fut in
-  edge.notify <- NRoot;
-  (* Activate this edge. This activates the root future
-     and schedules the main thread for execution. *)
-  activate_edge s edge;
-  (* Launch the scheduler. *)
-  dequeue s;
-  (* Extract the result. Cleanup is not required here. *)
-  assert (is_fulfilled fut || is_active fut);
-  match unsafe_query fut with
-  | Result result ->
-      result
-  | Future _ ->
-      raise Deadlock
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1507,11 +1465,10 @@ let run (type w) (main : w task) : w =
    some thread waits on the future [fut]. *)
 
 let[@inline] spawn (task : 'a task) : 'a future =
-  let s = get_state() in
-  new_ordinary_future s @@ fun fut ->
+  new_ordinary_future @@ fun fut ->
   (* Run [task] and fulfill [fut] with its result. *)
-  let child () = fulfill s fut (task()) in
-  unit_resumption s (fiber child)
+  let child () = fulfill fut (task()) in
+  unit_resumption (fiber child)
 
 (* [spawn_wait task] creates a new thread in charge of running [task] and
    waiting on its result, which is expected to be a future. Once [task] has
@@ -1519,11 +1476,10 @@ let[@inline] spawn (task : 'a task) : 'a future =
    returned by [task]. *)
 
 let[@inline] spawn_wait (task : 'a future task) : 'a future =
-  let s = get_state() in
-  new_ordinary_future s @@ fun fut ->
+  new_ordinary_future @@ fun fut ->
   (* Run [task] and change [fut] into a proxy for its result. *)
-  let child () = link s fut (task()) in
-  unit_resumption s (fiber child)
+  let child () = link fut (task()) in
+  unit_resumption (fiber child)
 
 (* [map f fut1] creates a new thread in charge of
    1- waiting for the future [fut1],
@@ -1535,16 +1491,15 @@ let[@inline] spawn_wait (task : 'a future task) : 'a future =
    [fut1]. *)
 
 let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
-  let s = get_state() in
-  match query s fut1 with
+  match query fut1 with
   | Result result ->
       spawn (fun () -> f result)
   | Future fut1 ->
-      let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
+      let fut, thread = new_ordinary_future_and_thread @@ fun _fut -> dummy_resumption in
       (* Block the new thread on [fut1]. Once the thread awakens,
          run [f] and fulfill [fut] with its result. *)
-      let resume result = fulfill s fut (f result) in
-      block s false thread fut1 (fiber resume);
+      let resume result = fulfill fut (f result) in
+      block false thread fut1 (fiber resume);
       fut
 
 (* [bind fut1 task] creates a new thread in charge of
@@ -1557,17 +1512,60 @@ let map (f : 'a -> 'b) (fut1 : 'a future) : 'b future =
    waiting for [fut1]. *)
 
 let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
-  let s = get_state() in
-  match query s fut1 with
+  match query fut1 with
   | Result result ->
       spawn_wait (fun () -> task result)
   | Future fut1 ->
-      let fut, thread = new_ordinary_future_and_thread s @@ fun _fut -> dummy_resumption in
+      let fut, thread = new_ordinary_future_and_thread @@ fun _fut -> dummy_resumption in
       (* Block the new thread on [fut1]. Once the thread awakens,
          run [task] and change [fut] into a proxy for its result. *)
-      let resume result = link s fut (task result) in
-      block s false thread fut1 (fiber resume);
+      let resume result = link fut (task result) in
+      block false thread fut1 (fiber resume);
       fut
+
+(* -------------------------------------------------------------------------- *)
+
+(* The toplevel functions, [run_fut] and [run]. *)
+
+(* [run_fut] (re-)initializes the scheduler's state, activates the future
+   [fut], runs the scheduler until it terminates (or a deadlock occurs),
+   and extracts the result of the future [fut]. *)
+
+(* [fut] must be clean; that is, either freshly created by [spawn], or
+   the result of a call to [query]. *)
+
+let run_fut (fut : 'a future) : 'a =
+  (* Re-initialize the scheduler's global state. *)
+  next_future_id := 0; (* TODO make [next_future_id] part of [s] *)
+  init();
+  (* We wish to treat [fut] as the root future. *)
+  (* Create an edge whose child is [fut]. *)
+  let edge = new_edge fut in
+  edge.notify <- NRoot;
+  (* Activate this edge. This activates the root future
+     and schedules the main thread for execution. *)
+  activate_edge edge;
+  (* Launch the scheduler. *)
+  dequeue();
+  (* [fut] is now fulfilled, unless deadlock has occurred. *)
+  (* Extract the result. *)
+  assert (is_fulfilled fut || is_active fut);
+  match query fut with
+  | Result result ->
+      result
+  | Future _ ->
+      raise Deadlock
+
+let[@inline] run (task : 'a task) : 'a =
+  (* Create a future for the task [task] and run it. *)
+  run_fut (spawn task)
+
+let run_fut fut =
+  match query fut with
+  | Result result ->
+      result
+  | Future fut ->
+      run_fut fut
 
 (* -------------------------------------------------------------------------- *)
 
@@ -1618,8 +1616,7 @@ let _join (fut : 'a future future) : 'a future =
    into a proxy future for [result]. *)
 
 let join (fut : 'a future future) : 'a future =
-  let s = get_state() in
-  match query s fut with
+  match query fut with
   | Result result ->
       result
   | Future fut ->
@@ -1681,8 +1678,7 @@ let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
 (* A race between two arbitrary futures. *)
 
 let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
-  let s = get_state() in
-  match query s fut1, query s fut2 with
+  match query fut1, query fut2 with
   | Result result1, _ ->
       if decisive1 result1 then fut1 else fut2
   | _, Result result2 ->
@@ -1729,11 +1725,3 @@ let[@inline] disjunction task1 task2 =
 
 let[@inline] disjunction_fut fut1 fut2 =
   earliest_decisive_fut is_true is_true fut1 fut2
-
-(* -------------------------------------------------------------------------- *)
-
-(* A public version of [query]. *)
-
-let[@inline] query fut =
-  let s = get_state() in
-  query s fut
