@@ -5,6 +5,22 @@ type mark = Mark.t
 
 (* -------------------------------------------------------------------------- *)
 
+(* The functor [Make()] begins here. Each application of [Make()] initializes
+   a fresh scheduler state, which all functions have access to. *)
+
+(* Even though the type ['a future] does not depend on the scheduler's state,
+   we make the functor generative, and publish the type ['a future] as part of
+   the functor's result signature. Thus, each application of [Make()] produces
+   a new abstract type of futures. A future created by one instance of
+   [Make()] cannot be passed to another instance of [Make()]. This seems
+   desirable. If we removed this restriction, we would find that running a
+   user-provided task can modify our internal data structures (the futures
+   and the DAG). *)
+
+module Make () = struct
+
+(* -------------------------------------------------------------------------- *)
+
 (* In order to try and keep track of effects at the type level, we introduce
    a distinction between the types ['a task] and ['a resumption]. When we
    construct a resumption using the data constructor [Resumption], we check,
@@ -502,6 +518,11 @@ let[@inline] init action =
 (* -------------------------------------------------------------------------- *)
 
 (* The effects that we use internally. *)
+
+(* Each application of the functor [Make()] causes two fresh effect names
+   [Wait] and [Yield] to be dynamically generated. Therefore, two distinct
+   applications of [Make()] use distinct effect names, and do not interfere
+   with each other, even if they are nested within one another. *)
 
 type _ Effect.t +=
 | Wait  : 'a future -> 'a Effect.t
@@ -1744,3 +1765,7 @@ let[@inline] disjunction task1 task2 =
 
 let[@inline] disjunction_fut fut1 fut2 =
   earliest_decisive_fut is_true is_true fut1 fut2
+
+(* -------------------------------------------------------------------------- *)
+
+end (* Make *)

@@ -26,6 +26,8 @@
 
 (* {2 Basic Functions} *)
 
+module Make () : sig
+
 (**A task whose result type is ['a] is just a function of type [unit -> 'a]. *)
 type 'a task =
   unit -> 'a
@@ -114,3 +116,5 @@ val bind : 'a future -> ('a -> 'b future) -> 'b future
 val map : ('a -> 'b) -> 'a future -> 'b future
 
 val join : 'a future future -> 'a future
+
+end (* Make *)

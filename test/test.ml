@@ -242,7 +242,8 @@ end
 module R = Eval(Reference)
 
 (* The candidate implementation. *)
-module C = Eval(Fourmi.Async)
+module F = Fourmi.Async.Make()
+module C = Eval(F)
 
 (* Comparing a reference value and a candidate value. *)
 
