@@ -461,20 +461,28 @@ type state = {
        resumptions until the main resumption terminates (or until a deadlock
        is reached). *)
 
+  mutable next_future_id: int;
+    (**The next available future ID. This field is used for debugging only. *)
+
 }
 
 (* Allocate the scheduler's state. *)
 
 let s : state =
   let current = dummy_thread
-  and queue = Queue.create() in
-  { current; queue }
+  and queue = Queue.create()
+  and next_future_id = 0 in
+  { current; queue; next_future_id }
 
 (* Initialize or re-initialize the scheduler's state. *)
 
-let init() =
+(* [init()] is invoked by [run_fut] and [run]. *)
+
+let[@inline] init() =
   s.current <- dummy_thread;
   Queue.clear s.queue
+    (* [next_future_id] is not reset because a future can persist
+       across several calls to [run]. *)
 
 (* -------------------------------------------------------------------------- *)
 
@@ -659,12 +667,9 @@ let new_edge child =
    because the future and its status point to each other. The string
    [kind] is used in a debugging message. *)
 
-let next_future_id =
-  ref 0
-
 let new_future (kind : string) : 'a future =
-  let id = !next_future_id in
-  next_future_id := id + 1;
+  let id = s.next_future_id in
+  s.next_future_id <- id + 1;
   let status = Uninitialized
   and mark = dummy_mark in
   if debug then
@@ -1536,7 +1541,6 @@ let bind (fut1 : 'a future) (task : 'a -> 'b future) : 'b future =
 
 let run_fut (fut : 'a future) : 'a =
   (* Re-initialize the scheduler's global state. *)
-  next_future_id := 0; (* TODO make [next_future_id] part of [s] *)
   init();
   (* We wish to treat [fut] as the root future. *)
   (* Create an edge whose child is [fut]. *)
