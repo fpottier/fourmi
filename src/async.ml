@@ -571,10 +571,10 @@ type 'a reply =
 
 let rec query1 (fut : 'a future) : 'a reply =
   assert (is_initialized fut);
+  assert (is_unfulfilled fut);
   match fut.status with
   | Uninitialized
-  | Done _ ->
-      assert false
+  | Done _
   | Ordinary _
   | Join _
   | Earliest _ ->
@@ -791,9 +791,9 @@ let[@inline] entry (parents : 'a parents) : 'a edge =
    yet the OCaml type-checker considers these fields unrelated. *)
 
 let[@inline] get_parents (fut : 'a future) : 'a parents =
+  assert (is_initialized fut);
   match fut.status with
-  | Uninitialized ->
-      assert false
+  | Uninitialized
   | Done _ ->
       None
   | Ordinary r ->
@@ -806,9 +806,9 @@ let[@inline] get_parents (fut : 'a future) : 'a parents =
       r.parents
 
 let[@inline] update_parents (fut : 'a future) (f : 'a parents -> 'a parents) =
+  assert (is_initialized fut);
   match fut.status with
-  | Uninitialized ->
-      assert false
+  | Uninitialized
   | Done _ ->
       ()
   | Ordinary r ->
@@ -1119,6 +1119,7 @@ fun edge ->
   edge.active <- false;
   (* Examine this edge's child, a future. *)
   let fut = edge.child in
+  assert (is_initialized fut);
   (* Because [edge] was active, we expect [fut] to be active. *)
   assert (is_active fut);
   (* Remove [edge] from [fut]'s active parent set. *)
@@ -1127,8 +1128,7 @@ fun edge ->
      then its outgoing edges must be deactivated. *)
   if not (is_active fut) then
     match fut.status with
-    | Uninitialized ->
-        assert false
+    | Uninitialized
     | Done _ ->
         ()
     | Ordinary { thread; _ } ->
