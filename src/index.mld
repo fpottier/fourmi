@@ -5,7 +5,7 @@ of user-defined tasks on a single hardware thread.
 
 {1 API}
 
-The library offers just one module, {!Fourmi.Async}.
+The library offers just one module, {!Fourmi}.
 
 {1 Installation and Usage}
 
