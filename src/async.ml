@@ -501,7 +501,7 @@ let s : state =
 (* [init action] runs [action()] with a re-initialized scheduler state.
    It detects and forbids reentrant calls. *)
 
-(* is invoked by [run_fut] and [run]. *)
+(* [init] is invoked by [run_fut] and [run]. *)
 
 exception Reentrancy
 
@@ -514,6 +514,15 @@ let[@inline] init action =
        a future can persist across several calls to [run]. *)
   let finished() = s.running <- false in
   Fun.protect ~finally:finished action
+
+(* [check_running()] checks that the scheduler is currently running.
+   In other words, it checks that we are currently inside the dynamic
+   extent of a call to [init]. *)
+
+exception NotRunning
+
+let[@inline] check_running () =
+  if not s.running then raise NotRunning
 
 (* -------------------------------------------------------------------------- *)
 
@@ -531,9 +540,11 @@ type _ Effect.t +=
 (* Public combinators. *)
 
 let[@inline] wait fut =
+  check_running();
   perform (Wait fut)
 
 let[@inline] yield () =
+  check_running();
   perform Yield
 
 (* -------------------------------------------------------------------------- *)
@@ -1710,12 +1721,14 @@ let raw_earliest_decisive decisive1 decisive2 fut1 fut2 =
 (* A race between two tasks. *)
 
 let[@inline] earliest_decisive decisive1 decisive2 task1 task2 =
+  check_running();
   raw_earliest_decisive decisive1 decisive2 (spawn task1) (spawn task2)
   |> wait
 
 (* A race between two arbitrary futures. *)
 
 let earliest_decisive_fut decisive1 decisive2 fut1 fut2 =
+  check_running();
   match query fut1, query fut2 with
   | Result result1, _ ->
       if decisive1 result1 then fut1 else fut2
