@@ -2,10 +2,36 @@
 
 ## Code
 
-* Document which functions must be called in the scope of `run`
-  and which functions can be called outside of its scope.
-  Dynamically test that `s.running` is true when a function
-  of the first kind is invoked.
+* Currently `wait fut` does not always yield; if `fut` is already fulfilled
+  then the thread continues its execution without yielding. We might wish to
+  modify `wait` so that it yields even in this case. We could then document
+  the fact that `wait` yields.
+
+## Testing
+
+* Clean up `play.ml` and write hand-written tests / examples.
+  Include examples where large computations are avoided.
+
+* Enlarge the coverage of the randomized test suite.
+  Write tests that involve a mutable store of futures,
+  while avoiding deadlocks.
+
+* Can we test that a thread whose future is unreachable is reclaimed
+  by the GC?
+
+* Benchmark. Measure the overhead compared with sequential execution.
+
+## Release
+
+* Before releasing, use `cppo` to get rid of the debugging support fields
+  `fut.id` and `edge.active` and `s.next_future_id.
+
+## LATER
+
+* Consider building a form of granularity control inside `yield`.
+  A call to `yield` really yields only one out of `K` times.
+  One counter per thread, stored in the record `thread`.
+  The global state lets us access the current thread via `s.current`.
 
 * It is currently *not* OK to let a continuation be reclaimed by the GC
   without explicitly discontinuing it.
@@ -15,19 +41,16 @@
   + Or, keep a list of all threads and perform manual collection.
   + Or, install a finalizer on each thread.
 
-* Should `query` perform path compression?
-  Are there other places where path compression should be performed?
+* Should we perform path compression of `Proxy` links, in `query` or
+  elsewhere?
 
-* Should union-find be used in a different way,
-  without `Proxy` futures? (Making links invisible.)
-  When two futures are merged,
-  their parent lists should be merged.
+* Should we use a union-find data structure off-the-shelf and remove `Proxy`
+  futures entirely? The `Proxy` links would become entirely invisible. When
+  two futures are merged, their parent lists should be merged.
 
-* Offer an operator that waits for one of / all of an array of futures to finish?
-  That would be more efficient than a sequence of calls to `wait`
-  or nested calls to `earliest`.
-  The difficulty with an array is what to do once one child becomes
-  done (but is not decisive).
+* Should we offer a variant of `earliest_decisive` that accepts an array of
+  futures, instead of just two futures? This might be messy, though. Once one
+  child becomes fulfilled (but is not decisive), we have a hole in the array.
 
 * Support cancellation. Allow a user task to throw an exception,
   record it in the future, throw it again when someone waits on
@@ -35,31 +58,19 @@
   + Only for one dedicated exception, `Cancel`?
   + Or for every exception?
 
-* Consider building a form of granularity control inside `yield`.
-  A call to `yield` really yields only one out of `K` times.
-  One counter per thread.
+* Think about a truly parallel (multi-processor) implementation.
 
-## Documentation
+## Micro-optimizations
 
-* Document whether it is necessary to call `yield`
-  as opposed to just `spawn` and `wait`.
-  Maybe `spawn` and `wait` should implicitly yield.
+* In the type `thread`, the field `awaits` has type `untyped_edge option`.
+  One could remove the option by using a pointer to a sentinel value.
 
-## Testing
+* Defining `earliest`, `conjunction`, and `disjunction` in terms of
+  `earliest_decisive` costs two words of memory in each edge of the binary
+  future, because the functions `decisive1` and `decisive2` are stored in
+  memory. One could avoid this by duplicating and specializing the code.
 
-* Test with variables of type future, so we get a DAG.
-  Also test with a mutable store of futures,
-  while avoiding deadlocks.
-
-* Can we test that a thread whose future is unreachable is reclaimed
-  by the GC?
-
-* Benchmark; measure the overhead compared with sequential execution.
-
-## Release
-
-* Before releasing, use `cppo` to get rid of the debugging support fields
-  `fut.id` and `edge.active` and `s.next_future_id.
+* Manual inlining of certain small functions in a large `let rec` may help.
 
 ## Related Work
 
@@ -78,15 +89,4 @@
 
 * Futures in C++ and Rust.
 
-* Look at Picos, Moonpool, and other existing libraries to see whether
-  something similar exists.
-
-## Micro-optimizations
-
-* In the type `thread`, the field `awaits` has type `untyped_edge option`.
-  One could remove the option by using a pointer to a sentinel value.
-
-* Defining `earliest`, `conjunction`, and `disjunction` in terms of
-  `earliest_decisive` costs two words of memory in each edge of the binary
-  future, because the functions `decisive1` and `decisive2` are stored in
-  memory. One could avoid this by duplicating and specializing the code.
+* Look at Picos and Moonpool.
