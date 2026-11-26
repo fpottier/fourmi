@@ -9,12 +9,15 @@
 
 ## Testing
 
-* Clean up `play.ml` and write hand-written tests / examples.
-  Include examples where large computations are avoided.
+* Provide more hand-written tests and examples.
 
 * Enlarge the coverage of the randomized test suite.
   Write tests that involve a mutable store of futures,
   while avoiding deadlocks.
+
+* Shrink the generated scenario after a bug has been found.
+
+* Print the generated scenario.
 
 * Can we test that a thread whose future is unreachable is reclaimed
   by the GC?
