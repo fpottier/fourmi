@@ -14,6 +14,7 @@
   (bug_reports https://github.com/fpottier/fourmi/-/issues)
   (synopsis "A cooperative speculative computation library")
   (license "LGPL-2.0-only WITH OCaml-LGPL-linking-exception")
+  (maintenance_intent "(latest)")
   (depends
     (ocaml (>= 5.5))
     (fix (and :with-test (>= 20261126)))
