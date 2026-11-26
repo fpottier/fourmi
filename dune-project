@@ -16,5 +16,6 @@
   (license "LGPL-2.0-only WITH OCaml-LGPL-linking-exception")
   (depends
     (ocaml (>= 5.5))
+    (fix (and :with-test (>= 20261126)))
   )
 )

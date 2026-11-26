@@ -28,7 +28,8 @@ clean:
 .PHONY: test
 test:
 	@ dune build @all
-	@ make -C test
+	@ dune runtest
+	@ make -C test/random
 
 .PHONY: install
 install:

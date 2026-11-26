@@ -1,0 +1,4 @@
+(test
+  (name misc)
+  (libraries fix fourmi)
+)
